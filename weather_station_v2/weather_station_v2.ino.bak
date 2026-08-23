@@ -1,0 +1,2581 @@
+/*
+  ================================================================
+    WEATHER STATION V2 — ARDUINO IDE EDITION
+    Waveshare ESP32-S3-LCD-2 / ESP32-S3R8 / 240x320 ST7789
+  ================================================================
+
+  Single-file Arduino sketch. No PlatformIO. No local header files.
+
+  REQUIRED LIBRARIES (Arduino Library Manager):
+    - ArduinoJson 7.x
+    - Arduino_GFX_Library
+    - lvgl 9.x
+
+  ESP32 board package supplies WiFi, HTTPClient, Preferences, SD, etc.
+
+  IMPORTANT:
+    The display/button/SD/battery defaults below are carried forward
+    from the V1 sketch. Verify revision-sensitive pins before flashing.
+  ================================================================
+*/
+
+#include <Arduino.h>
+
+SET_LOOP_TASK_STACK_SIZE(24 * 1024);
+
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
+#include <Preferences.h>
+#include <SPI.h>
+#include <SD.h>
+#include <FS.h>
+#include <time.h>
+#include <math.h>
+#include <array>
+#include <algorithm>
+#include <cstring>
+#include <ctime>
+#include <esp_heap_caps.h>
+#include <esp_arduino_version.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
+#include <Arduino_GFX_Library.h>
+#include <lvgl.h>
+
+// ============================================================================
+// ONLY EDIT THIS SECTION FIRST
+// ============================================================================
+#define WS_WIFI_SSID "Xiaomi 11i HyperCharge"
+#define WS_WIFI_PASSWORD "12345678"
+
+
+// ====================== include/BoardConfig.h ======================
+namespace ws::board {
+
+// -----------------------------------------------------------------------------
+// Display: these pins match the V1 project that already worked on the user's
+// Waveshare ESP32-S3-LCD-2. Keep revision-sensitive hardware here only.
+// -----------------------------------------------------------------------------
+inline constexpr int kLcdWidth = 240;
+inline constexpr int kLcdHeight = 320;
+inline constexpr int kLcdSclk = 39;
+inline constexpr int kLcdMosi = 38;
+inline constexpr int kLcdMiso = 40;
+inline constexpr int kLcdDc = 42;
+inline constexpr int kLcdCs = 45;
+inline constexpr int kLcdRst = -1;
+inline constexpr int kBacklight = 1;
+inline constexpr int kBootButton = 0;
+
+// QMI8658 onboard I2C. If a future PCB revision differs, change only these.
+inline constexpr int kImuSda = 48;
+inline constexpr int kImuScl = 47;
+inline constexpr uint32_t kImuClockHz = 400000;
+inline constexpr bool kImuRotationInvert = false;
+
+// -----------------------------------------------------------------------------
+// TF card profile.
+// The V1 sketch used CS=21 and no explicit SPI remap. That is the default here
+// because it is the user's known-good baseline. A newer board/documentation
+// profile seen in the wild uses the LCD SPI lines with CS=41; switch the enum
+// if that is your PCB revision.
+// -----------------------------------------------------------------------------
+enum class SdProfile : uint8_t {
+  LegacyV1,
+  SharedLcdBusCs41,
+};
+inline constexpr SdProfile kSdProfile = SdProfile::LegacyV1;
+
+inline constexpr int kLegacySdCs = 21;
+inline constexpr int kSharedSdSclk = 39;
+inline constexpr int kSharedSdMosi = 38;
+inline constexpr int kSharedSdMiso = 40;
+inline constexpr int kSharedSdCs = 41;
+
+// Battery revisions differ. V2 probes both known layouts and selects the
+// plausible Li-ion reading at boot. These are input-only ADC reads.
+struct BatteryCandidate {
+  int pin;
+  float divider;
+};
+inline constexpr BatteryCandidate kBatteryCandidates[] = {
+  { 4, 2.0f },  // V1-proven source configuration
+  { 5, 3.0f },  // newer 200K/100K divider layout
+};
+
+inline constexpr uint32_t kBacklightPwmHz = 20000;
+inline constexpr uint8_t kBacklightPwmBits = 8;
+inline constexpr uint8_t kBacklightLegacyChannel = 7;
+
+}  // namespace ws::board
+
+// ====================== include/AppConfig.h ======================
+namespace ws::config {
+
+inline constexpr const char* kFirmwareName = "Weather Station V2";
+inline constexpr const char* kFirmwareVersion = "2.0.0";
+inline constexpr const char* kLocationName = "HOME";      // EDIT ME
+inline constexpr double kLatitude = 30.000000;            // EDIT ME
+inline constexpr double kLongitude = 75.000000;           // EDIT ME
+inline constexpr const char* kTimezone = "Asia/Kolkata";  // EDIT IF NEEDED
+
+inline constexpr uint32_t kWeatherRefreshMs = 10UL * 60UL * 1000UL;
+inline constexpr uint32_t kAirRefreshMs = 20UL * 60UL * 1000UL;
+inline constexpr uint32_t kHistoryWriteMs = 15UL * 60UL * 1000UL;
+inline constexpr uint32_t kWifiRetryMs = 15UL * 1000UL;
+inline constexpr uint32_t kSystemSampleMs = 5UL * 1000UL;
+inline constexpr uint32_t kCarouselDefaultMs = 20UL * 1000UL;
+
+inline constexpr uint8_t kHttpRetries = 3;
+inline constexpr uint32_t kHttpConnectTimeoutMs = 8000;
+inline constexpr uint32_t kHttpReadTimeoutMs = 15000;
+
+inline constexpr size_t kHourlyForecastCount = 48;
+inline constexpr size_t kDailyForecastCount = 7;
+
+}  // namespace ws::config
+
+// ====================== include/AppTypes.h ======================
+namespace ws {
+
+enum class TemperatureUnit : uint8_t { Celsius,
+                                       Fahrenheit };
+enum class WindUnit : uint8_t { Kmh,
+                                Mph,
+                                Ms };
+enum class PressureUnit : uint8_t { Hpa,
+                                    InHg };
+enum class ThemeMode : uint8_t { Auto,
+                                 Dark,
+                                 Light };
+enum class Page : uint8_t {
+  Home,
+  Hourly,
+  Forecast,
+  Rain,
+  Wind,
+  Atmosphere,
+  Air,
+  Sun,
+  Alerts,
+  History,
+  System,
+  Count
+};
+
+struct Settings {
+  uint16_t schema = 2;
+  TemperatureUnit temperatureUnit = TemperatureUnit::Celsius;
+  WindUnit windUnit = WindUnit::Kmh;
+  PressureUnit pressureUnit = PressureUnit::Hpa;
+  ThemeMode theme = ThemeMode::Auto;
+  bool autoBrightness = true;
+  uint8_t brightnessPct = 82;
+  bool carousel = true;
+  uint16_t carouselSeconds = 20;
+  bool autoOrientation = true;
+  Page lastPage = Page::Home;
+};
+
+struct HourForecast {
+  char time[6] = "--:--";
+  float temperature = NAN;
+  float apparent = NAN;
+  float humidity = NAN;
+  float dewPoint = NAN;
+  float pressure = NAN;
+  float wind = NAN;
+  float gust = NAN;
+  float windDirection = NAN;
+  float precipitation = NAN;
+  float rain = NAN;
+  float visibility = NAN;
+  float uv = NAN;
+  uint8_t precipitationProbability = 0;
+  int16_t weatherCode = -1;
+};
+
+struct DayForecast {
+  char date[11] = "----------";
+  float minimum = NAN;
+  float maximum = NAN;
+  float precipitation = NAN;
+  float uvMax = NAN;
+  uint8_t precipitationProbability = 0;
+  int16_t weatherCode = -1;
+  char sunrise[6] = "--:--";
+  char sunset[6] = "--:--";
+};
+
+struct WeatherSnapshot {
+  bool valid = false;
+  bool fromCache = false;
+  time_t fetchedAt = 0;
+  char observationTime[17] = "----------------";
+
+  float temperature = NAN;
+  float apparent = NAN;
+  float humidity = NAN;
+  float dewPoint = NAN;
+  float pressure = NAN;
+  float pressureDelta6h = NAN;
+  float wind = NAN;
+  float gust = NAN;
+  float windDirection = NAN;
+  float precipitation = NAN;
+  float rain = NAN;
+  float visibility = NAN;
+  float uv = NAN;
+  uint8_t precipitationProbability = 0;
+  int16_t weatherCode = -1;
+  bool isDay = true;
+
+  std::array<HourForecast, config::kHourlyForecastCount> hourly{};
+  uint8_t hourlyCount = 0;
+  std::array<DayForecast, config::kDailyForecastCount> daily{};
+  uint8_t dailyCount = 0;
+};
+
+struct AirSnapshot {
+  bool valid = false;
+  bool fromCache = false;
+  time_t fetchedAt = 0;
+  float pm25 = NAN;
+  float pm10 = NAN;
+  float ozone = NAN;
+  float no2 = NAN;
+  float so2 = NAN;
+  float co = NAN;
+  float europeanAqi = NAN;
+  float usAqi = NAN;
+  float dust = NAN;
+};
+
+struct SystemSnapshot {
+  bool wifiConnected = false;
+  int16_t rssi = 0;
+  char ip[16] = "0.0.0.0";
+  bool sdAvailable = false;
+  uint64_t sdUsed = 0;
+  uint64_t sdTotal = 0;
+  bool imuAvailable = false;
+  float batteryVoltage = NAN;
+  int8_t batteryPercent = -1;
+  int8_t batteryAdcPin = -1;
+  uint32_t freeHeap = 0;
+  uint32_t freePsram = 0;
+  uint32_t flashBytes = 0;
+  uint32_t historySamples = 0;
+};
+
+struct AppSnapshot {
+  WeatherSnapshot weather;
+  AirSnapshot air;
+  SystemSnapshot system;
+  uint32_t revision = 0;
+};
+
+inline bool finite(float value) {
+  return std::isfinite(value);
+}
+
+}  // namespace ws
+
+// ====================== include/DataStore.h ======================
+namespace ws {
+
+class DataStore {
+public:
+  DataStore();
+  ~DataStore();
+
+  AppSnapshot snapshot() const;
+  void setWeather(const WeatherSnapshot& value);
+  void setAir(const AirSnapshot& value);
+  void setSystem(const SystemSnapshot& value);
+  void mutateSystem(void (*fn)(SystemSnapshot&));
+
+private:
+  mutable SemaphoreHandle_t mutex_ = nullptr;
+  AppSnapshot state_{};
+  void bump_();
+};
+
+}  // namespace ws
+
+// ====================== include/SettingsStore.h ======================
+namespace ws {
+
+class SettingsStore {
+public:
+  Settings load();
+  bool save(const Settings& settings);
+  void reset();
+
+private:
+  Preferences prefs_;
+};
+
+}  // namespace ws
+
+// ====================== include/NetworkService.h ======================
+namespace ws {
+
+class NetworkService {
+public:
+  void begin();
+  void service();
+  bool connected() const {
+    return WiFi.status() == WL_CONNECTED;
+  }
+  bool timeConfigured() const {
+    return timeConfigured_;
+  }
+  void forceReconnect();
+
+private:
+  uint32_t lastAttemptMs_ = 0;
+  bool wasConnected_ = false;
+  bool timeConfigured_ = false;
+  void connect_();
+  void configureTime_();
+};
+
+}  // namespace ws
+
+// ====================== include/OpenMeteoClient.h ======================
+namespace ws {
+
+class OpenMeteoClient {
+public:
+  bool fetchWeather(WeatherSnapshot& out);
+  bool fetchAir(AirSnapshot& out);
+
+private:
+  bool getJson_(const String& url, JsonDocument& doc, const char* tag);
+  String weatherUrl_() const;
+  String airUrl_() const;
+  static void copyHm_(char (&dst)[6], const char* iso);
+  static void copyDate_(char (&dst)[11], const char* iso);
+};
+
+}  // namespace ws
+
+// ====================== include/StorageService.h ======================
+namespace ws {
+
+class StorageService {
+public:
+  bool begin();
+  bool loadCache(WeatherSnapshot& weather, AirSnapshot& air);
+  void service(const AppSnapshot& snapshot);
+  bool available() const {
+    return sdAvailable_;
+  }
+  uint32_t historySamples() const {
+    return historySamples_;
+  }
+  uint64_t usedBytes() const {
+    return sdAvailable_ ? SD.usedBytes() : 0;
+  }
+  uint64_t totalBytes() const {
+    return sdAvailable_ ? SD.totalBytes() : 0;
+  }
+
+private:
+  bool sdAvailable_ = false;
+  uint32_t lastHistoryMs_ = 0;
+  time_t lastWeatherCached_ = 0;
+  time_t lastAirCached_ = 0;
+  time_t lastNvsCached_ = 0;
+  uint32_t historySamples_ = 0;
+  Preferences prefs_;
+
+  bool beginSd_();
+  void ensureFiles_();
+  bool loadSdCache_(WeatherSnapshot& weather, AirSnapshot& air);
+  bool loadSdCacheFile_(const char* path, WeatherSnapshot& weather, AirSnapshot& air);
+  bool loadNvsCache_(WeatherSnapshot& weather, AirSnapshot& air);
+  void saveSdCache_(const WeatherSnapshot& weather, const AirSnapshot& air);
+  void saveNvsCache_(const WeatherSnapshot& weather, const AirSnapshot& air);
+  void appendHistory_(const AppSnapshot& snapshot);
+  static uint32_t hash_(const uint8_t* data, size_t size, uint32_t seed = 2166136261u);
+};
+
+}  // namespace ws
+
+// ====================== include/PowerService.h ======================
+namespace ws {
+
+class PowerService {
+public:
+  void begin();
+  void service(const Settings& settings, const AppSnapshot& snapshot);
+  float voltage() const {
+    return voltage_;
+  }
+  int percent() const {
+    return percent_;
+  }
+  int adcPin() const {
+    return adcPin_;
+  }
+
+private:
+  int adcPin_ = -1;
+  float divider_ = NAN;
+  float voltage_ = NAN;
+  int percent_ = -1;
+  uint32_t lastSampleMs_ = 0;
+  uint8_t lastDuty_ = 255;
+
+  float readCandidate_(int pin, float divider) const;
+  void detectBattery_();
+  void sampleBattery_();
+  static int socFromVoltage_(float volts);
+  void setBacklight_(uint8_t percent);
+};
+
+}  // namespace ws
+
+// ====================== include/ButtonService.h ======================
+namespace ws {
+
+class ButtonService {
+public:
+  enum class Event : uint8_t { None,
+                               Click,
+                               DoubleClick,
+                               LongPress };
+  void begin();
+  Event service();
+
+private:
+  bool raw_ = HIGH;
+  bool stable_ = HIGH;
+  uint32_t rawChangedMs_ = 0;
+  uint32_t pressedMs_ = 0;
+  bool longFired_ = false;
+  bool clickPending_ = false;
+  uint32_t clickReleasedMs_ = 0;
+};
+
+}  // namespace ws
+
+// ====================== include/DisplayService.h ======================
+namespace ws {
+
+class DisplayService {
+public:
+  bool begin();
+  void service();
+  void setRotation180(bool enabled);
+  bool rotation180() const {
+    return rotation180_;
+  }
+  lv_obj_t* screen() const {
+    return screen_;
+  }
+
+private:
+  Arduino_DataBus* bus_ = nullptr;
+  Arduino_GFX* gfx_ = nullptr;
+  lv_display_t* display_ = nullptr;
+  lv_obj_t* screen_ = nullptr;
+  uint8_t* buffer1_ = nullptr;
+  uint8_t* buffer2_ = nullptr;
+  bool rotation180_ = false;
+
+  static DisplayService* instance_;
+  static void flush_(lv_display_t* display, const lv_area_t* area, uint8_t* pixels);
+  static uint32_t tick_();
+};
+
+}  // namespace ws
+
+// ====================== include/Format.h ======================
+namespace ws::fmt {
+
+String temperature(float c, const Settings& s, unsigned int decimals = 1);
+String wind(float kmh, const Settings& s, unsigned int decimals = 1);
+String pressure(float hpa, const Settings& s, unsigned int decimals = 1);
+String visibility(float metres);
+String direction(float degrees);
+String weatherDescription(int code);
+String aqiCategory(float europeanAqi);
+String beaufortLabel(float kmh);
+String pressureTrend(float delta6h);
+String localTime();
+String localDate();
+String moonPhase();
+const char* pageName(Page page);
+
+}  // namespace ws::fmt
+
+// ====================== include/WeatherService.h ======================
+namespace ws {
+
+class WeatherService {
+public:
+  explicit WeatherService(DataStore& store)
+    : store_(store) {}
+  bool begin();
+  void requestRefresh();
+
+private:
+  DataStore& store_;
+  OpenMeteoClient client_;
+  TaskHandle_t task_ = nullptr;
+  volatile bool forceRefresh_ = true;
+  uint32_t lastWeatherMs_ = 0;
+  uint32_t lastAirMs_ = 0;
+
+  static void taskEntry_(void* arg);
+  void run_();
+};
+
+}  // namespace ws
+
+// ====================== include/Ui.h ======================
+namespace ws {
+
+class Ui {
+public:
+  Ui(DataStore& store, DisplayService& display, Settings& settings)
+    : store_(store), display_(display), settings_(settings) {}
+
+  void begin();
+  void service();
+  void nextPage();
+  void home();
+  void setPage(Page page);
+  Page page() const {
+    return page_;
+  }
+  void settingsChanged(bool rebuild = true);
+
+private:
+  DataStore& store_;
+  DisplayService& display_;
+  Settings& settings_;
+
+  Page page_ = Page::Home;
+  uint32_t seenRevision_ = UINT32_MAX;
+  uint32_t lastHeaderMs_ = 0;
+  uint32_t lastCarouselMs_ = 0;
+  bool dark_ = true;
+
+  lv_obj_t* root_ = nullptr;
+  lv_obj_t* header_ = nullptr;
+  lv_obj_t* content_ = nullptr;
+  lv_obj_t* footer_ = nullptr;
+  lv_obj_t* headerLocation_ = nullptr;
+  lv_obj_t* headerTime_ = nullptr;
+  lv_obj_t* headerStatus_ = nullptr;
+  lv_obj_t* headerPage_ = nullptr;
+  lv_obj_t* footerInfo_ = nullptr;
+  std::array<lv_obj_t*, 28> value_{};
+  lv_obj_t* chart_ = nullptr;
+  lv_chart_series_t* chartSeries_ = nullptr;
+
+  lv_color_t bg_() const;
+  lv_color_t panel_() const;
+  lv_color_t panel2_() const;
+  lv_color_t text_() const;
+  lv_color_t muted_() const;
+  lv_color_t cyan_() const {
+    return lv_color_hex(0x43D9FF);
+  }
+  lv_color_t blue_() const {
+    return lv_color_hex(0x4B8DFF);
+  }
+  lv_color_t green_() const {
+    return lv_color_hex(0x43D17D);
+  }
+  lv_color_t yellow_() const {
+    return lv_color_hex(0xFFD166);
+  }
+  lv_color_t orange_() const {
+    return lv_color_hex(0xFF9F5A);
+  }
+  lv_color_t red_() const {
+    return lv_color_hex(0xFF5D73);
+  }
+  lv_color_t purple_() const {
+    return lv_color_hex(0xA98BFF);
+  }
+
+  bool resolveDark_(const AppSnapshot& s) const;
+  void buildShell_();
+  void buildPage_();
+  void refresh_(const AppSnapshot& s, bool dataChanged);
+  void refreshHeader_(const AppSnapshot& s);
+  void clearPageRefs_();
+
+  lv_obj_t* label_(lv_obj_t* parent, const char* text, int x, int y, int w, int h,
+                   const lv_font_t* font, lv_color_t color, lv_text_align_t align = LV_TEXT_ALIGN_LEFT);
+  lv_obj_t* card_(int x, int y, int w, int h, lv_color_t accent = lv_color_hex(0x000000), bool accentEnabled = false);
+  void metricCard_(size_t slot, const char* caption, int x, int y, int w, int h, lv_color_t accent);
+
+  void buildHome_();
+  void buildHourly_();
+  void buildForecast_();
+  void buildRain_();
+  void buildWind_();
+  void buildAtmosphere_();
+  void buildAir_();
+  void buildSun_();
+  void buildAlerts_(const AppSnapshot& s);
+  void buildHistory_();
+  void buildSystem_();
+
+  void refreshHome_(const AppSnapshot& s);
+  void refreshHourly_(const AppSnapshot& s);
+  void refreshForecast_(const AppSnapshot& s);
+  void refreshRain_(const AppSnapshot& s);
+  void refreshWind_(const AppSnapshot& s);
+  void refreshAtmosphere_(const AppSnapshot& s);
+  void refreshAir_(const AppSnapshot& s);
+  void refreshSun_(const AppSnapshot& s);
+  void refreshHistory_(const AppSnapshot& s);
+  void refreshSystem_(const AppSnapshot& s);
+};
+
+}  // namespace ws
+
+// ====================== include/SerialConsole.h ======================
+namespace ws {
+
+class SerialConsole {
+public:
+  SerialConsole(Settings& settings, SettingsStore& settingsStore, DataStore& data,
+                NetworkService& network, WeatherService& weather, Ui& ui)
+    : settings_(settings), settingsStore_(settingsStore), data_(data), network_(network), weather_(weather), ui_(ui) {}
+  void begin();
+  void service();
+
+private:
+  Settings& settings_;
+  SettingsStore& settingsStore_;
+  DataStore& data_;
+  NetworkService& network_;
+  WeatherService& weather_;
+  Ui& ui_;
+  String line_;
+
+  void execute_(String command);
+  void help_() const;
+  void status_() const;
+  void saveAndRefresh_(bool rebuild = true);
+};
+
+}  // namespace ws
+
+// ====================== src/DataStore.cpp ======================
+namespace ws {
+
+DataStore::DataStore() {
+  mutex_ = xSemaphoreCreateMutex();
+}
+
+DataStore::~DataStore() {
+  if (mutex_) vSemaphoreDelete(mutex_);
+}
+
+AppSnapshot DataStore::snapshot() const {
+  AppSnapshot copy{};
+  if (!mutex_) return copy;
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  copy = state_;
+  xSemaphoreGive(mutex_);
+  return copy;
+}
+
+void DataStore::bump_() {
+  ++state_.revision;
+  if (state_.revision == 0) ++state_.revision;
+}
+
+void DataStore::setWeather(const WeatherSnapshot& value) {
+  if (!mutex_) return;
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  state_.weather = value;
+  bump_();
+  xSemaphoreGive(mutex_);
+}
+
+void DataStore::setAir(const AirSnapshot& value) {
+  if (!mutex_) return;
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  state_.air = value;
+  bump_();
+  xSemaphoreGive(mutex_);
+}
+
+void DataStore::setSystem(const SystemSnapshot& value) {
+  if (!mutex_) return;
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  state_.system = value;
+  bump_();
+  xSemaphoreGive(mutex_);
+}
+
+void DataStore::mutateSystem(void (*fn)(SystemSnapshot&)) {
+  if (!mutex_ || !fn) return;
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  fn(state_.system);
+  bump_();
+  xSemaphoreGive(mutex_);
+}
+
+}  // namespace ws
+
+// ====================== src/SettingsStore.cpp ======================
+namespace ws {
+
+Settings SettingsStore::load() {
+  Settings s{};
+  if (!prefs_.begin("weather-v2", true)) return s;
+
+  const uint16_t schema = prefs_.getUShort("schema", 0);
+  if (schema == s.schema) {
+    s.temperatureUnit = static_cast<TemperatureUnit>(prefs_.getUChar("tempUnit", static_cast<uint8_t>(s.temperatureUnit)));
+    s.windUnit = static_cast<WindUnit>(prefs_.getUChar("windUnit", static_cast<uint8_t>(s.windUnit)));
+    s.pressureUnit = static_cast<PressureUnit>(prefs_.getUChar("pressUnit", static_cast<uint8_t>(s.pressureUnit)));
+    s.theme = static_cast<ThemeMode>(prefs_.getUChar("theme", static_cast<uint8_t>(s.theme)));
+    s.autoBrightness = prefs_.getBool("autoBright", s.autoBrightness);
+    s.brightnessPct = prefs_.getUChar("bright", s.brightnessPct);
+    s.carousel = prefs_.getBool("carousel", s.carousel);
+    s.carouselSeconds = prefs_.getUShort("carSec", s.carouselSeconds);
+    s.autoOrientation = prefs_.getBool("orient", s.autoOrientation);
+    s.lastPage = static_cast<Page>(prefs_.getUChar("lastPage", static_cast<uint8_t>(s.lastPage)));
+  }
+  prefs_.end();
+
+  if (static_cast<uint8_t>(s.temperatureUnit) > static_cast<uint8_t>(TemperatureUnit::Fahrenheit)) s.temperatureUnit = TemperatureUnit::Celsius;
+  if (static_cast<uint8_t>(s.windUnit) > static_cast<uint8_t>(WindUnit::Ms)) s.windUnit = WindUnit::Kmh;
+  if (static_cast<uint8_t>(s.pressureUnit) > static_cast<uint8_t>(PressureUnit::InHg)) s.pressureUnit = PressureUnit::Hpa;
+  if (static_cast<uint8_t>(s.theme) > static_cast<uint8_t>(ThemeMode::Light)) s.theme = ThemeMode::Auto;
+  if (static_cast<uint8_t>(s.lastPage) >= static_cast<uint8_t>(Page::Count)) s.lastPage = Page::Home;
+  s.brightnessPct = constrain(s.brightnessPct, 5, 100);
+  s.carouselSeconds = constrain(s.carouselSeconds, 8, 120);
+  return s;
+}
+
+bool SettingsStore::save(const Settings& s) {
+  if (!prefs_.begin("weather-v2", false)) return false;
+  bool ok = true;
+  ok &= prefs_.putUShort("schema", s.schema) > 0;
+  ok &= prefs_.putUChar("tempUnit", static_cast<uint8_t>(s.temperatureUnit)) > 0;
+  ok &= prefs_.putUChar("windUnit", static_cast<uint8_t>(s.windUnit)) > 0;
+  ok &= prefs_.putUChar("pressUnit", static_cast<uint8_t>(s.pressureUnit)) > 0;
+  ok &= prefs_.putUChar("theme", static_cast<uint8_t>(s.theme)) > 0;
+  ok &= prefs_.putBool("autoBright", s.autoBrightness) > 0;
+  ok &= prefs_.putUChar("bright", s.brightnessPct) > 0;
+  ok &= prefs_.putBool("carousel", s.carousel) > 0;
+  ok &= prefs_.putUShort("carSec", s.carouselSeconds) > 0;
+  ok &= prefs_.putBool("orient", s.autoOrientation) > 0;
+  ok &= prefs_.putUChar("lastPage", static_cast<uint8_t>(s.lastPage)) > 0;
+  prefs_.end();
+  return ok;
+}
+
+void SettingsStore::reset() {
+  if (!prefs_.begin("weather-v2", false)) return;
+  prefs_.clear();
+  prefs_.end();
+}
+
+}  // namespace ws
+
+// ====================== src/NetworkService.cpp ======================
+namespace ws {
+
+void NetworkService::begin() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(false);
+  // SNTP can be configured before association; it starts synchronizing as
+  // soon as the network becomes available. This avoids a fetch-vs-NTP race.
+  configureTime_();
+  connect_();
+}
+
+void NetworkService::connect_() {
+  lastAttemptMs_ = millis();
+  if (strlen(WS_WIFI_SSID) == 0) {
+    Serial.println("[wifi] No credentials. Copy secrets.example.h to secrets.h.");
+    return;
+  }
+  Serial.printf("[wifi] Connecting to %s\n", WS_WIFI_SSID);
+  WiFi.begin(WS_WIFI_SSID, WS_WIFI_PASSWORD);
+}
+
+void NetworkService::configureTime_() {
+  configTzTime(config::kTimezone, "pool.ntp.org", "time.nist.gov", "time.google.com");
+  timeConfigured_ = true;
+  Serial.printf("[time] TZ=%s; NTP configured\n", config::kTimezone);
+}
+
+void NetworkService::service() {
+  const bool nowConnected = connected();
+  if (nowConnected && !wasConnected_) {
+    Serial.printf("[wifi] Connected: %s, RSSI %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+  } else if (!nowConnected && wasConnected_) {
+    Serial.println("[wifi] Connection lost; offline cache remains active");
+  }
+  wasConnected_ = nowConnected;
+
+  if (!nowConnected && strlen(WS_WIFI_SSID) > 0 && millis() - lastAttemptMs_ >= config::kWifiRetryMs) {
+    lastAttemptMs_ = millis();
+    WiFi.reconnect();
+  }
+}
+
+void NetworkService::forceReconnect() {
+  WiFi.disconnect(false, false);
+  connect_();
+}
+
+}  // namespace ws
+
+// ====================== src/OpenMeteoClient.cpp ======================
+namespace ws {
+
+bool OpenMeteoClient::getJson_(const String& url, JsonDocument& doc, const char* tag) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  for (uint8_t attempt = 1; attempt <= config::kHttpRetries; ++attempt) {
+    WiFiClientSecure client;
+    // Public weather data; HTTPS is encrypted. For strict server identity
+    // validation, replace setInsecure() with a maintained CA bundle.
+    client.setInsecure();
+    HTTPClient http;
+    http.setConnectTimeout(config::kHttpConnectTimeoutMs);
+    http.setTimeout(config::kHttpReadTimeoutMs);
+    http.setUserAgent("WeatherStationV2/2.0");
+    http.setReuse(false);
+
+    if (!http.begin(client, url)) {
+      Serial.printf("[%s] begin failed (%u/%u)\n", tag, attempt, config::kHttpRetries);
+    } else {
+      const int status = http.GET();
+      if (status == HTTP_CODE_OK) {
+        const DeserializationError err = deserializeJson(doc, http.getStream());
+        http.end();
+        if (!err) return true;
+        Serial.printf("[%s] JSON: %s\n", tag, err.c_str());
+      } else {
+        Serial.printf("[%s] HTTP %d (%u/%u)\n", tag, status, attempt, config::kHttpRetries);
+        http.end();
+      }
+    }
+    delay(250U * attempt * attempt);
+  }
+  return false;
+}
+
+String OpenMeteoClient::weatherUrl_() const {
+  String u = "https://api.open-meteo.com/v1/forecast?latitude=";
+  u += String(config::kLatitude, 6);
+  u += "&longitude=" + String(config::kLongitude, 6);
+  u += "&current=temperature_2m,relative_humidity_2m,apparent_temperature,dew_point_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation,rain,weather_code,is_day";
+  u += "&hourly=temperature_2m,apparent_temperature,relative_humidity_2m,dew_point_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation,rain,precipitation_probability,visibility,uv_index,weather_code";
+  u += "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,sunrise,sunset,uv_index_max";
+  u += "&past_hours=6&forecast_hours=48&forecast_days=7";
+  u += "&temperature_unit=celsius&wind_speed_unit=kmh&precipitation_unit=mm&timezone=auto";
+  return u;
+}
+
+String OpenMeteoClient::airUrl_() const {
+  String u = "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=";
+  u += String(config::kLatitude, 6);
+  u += "&longitude=" + String(config::kLongitude, 6);
+  u += "&current=pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone,european_aqi,us_aqi,dust";
+  u += "&timezone=auto";
+  return u;
+}
+
+void OpenMeteoClient::copyHm_(char (&dst)[6], const char* iso) {
+  if (!iso || strlen(iso) < 16) {
+    strlcpy(dst, "--:--", sizeof(dst));
+    return;
+  }
+  memcpy(dst, iso + 11, 5);
+  dst[5] = '\0';
+}
+
+void OpenMeteoClient::copyDate_(char (&dst)[11], const char* iso) {
+  if (!iso || strlen(iso) < 10) {
+    strlcpy(dst, "----------", sizeof(dst));
+    return;
+  }
+  memcpy(dst, iso, 10);
+  dst[10] = '\0';
+}
+
+bool OpenMeteoClient::fetchWeather(WeatherSnapshot& out) {
+  JsonDocument doc;
+  if (!getJson_(weatherUrl_(), doc, "weather")) return false;
+
+  WeatherSnapshot w{};
+  JsonObject current = doc["current"];
+  const char* currentTime = current["time"] | "";
+  strlcpy(w.observationTime, currentTime, sizeof(w.observationTime));
+  w.temperature = current["temperature_2m"] | NAN;
+  w.apparent = current["apparent_temperature"] | NAN;
+  w.humidity = current["relative_humidity_2m"] | NAN;
+  w.dewPoint = current["dew_point_2m"] | NAN;
+  w.pressure = current["pressure_msl"] | NAN;
+  w.wind = current["wind_speed_10m"] | NAN;
+  w.windDirection = current["wind_direction_10m"] | NAN;
+  w.gust = current["wind_gusts_10m"] | NAN;
+  w.precipitation = current["precipitation"] | NAN;
+  w.rain = current["rain"] | NAN;
+  w.weatherCode = current["weather_code"] | -1;
+  w.isDay = (current["is_day"] | 1) != 0;
+
+  JsonObject hourly = doc["hourly"];
+  JsonArray times = hourly["time"];
+  int nowIndex = -1;
+  if (strlen(currentTime) >= 13) {
+    for (size_t i = 0; i < times.size(); ++i) {
+      const char* t = times[i] | "";
+      if (strncmp(t, currentTime, 13) == 0) {
+        nowIndex = static_cast<int>(i);
+        break;
+      }
+    }
+  }
+  if (nowIndex < 0) nowIndex = std::min(6, std::max(0, static_cast<int>(times.size()) - 1));
+
+  auto arrTemp = hourly["temperature_2m"].as<JsonArray>();
+  auto arrApp = hourly["apparent_temperature"].as<JsonArray>();
+  auto arrHum = hourly["relative_humidity_2m"].as<JsonArray>();
+  auto arrDew = hourly["dew_point_2m"].as<JsonArray>();
+  auto arrPressure = hourly["pressure_msl"].as<JsonArray>();
+  auto arrWind = hourly["wind_speed_10m"].as<JsonArray>();
+  auto arrDir = hourly["wind_direction_10m"].as<JsonArray>();
+  auto arrGust = hourly["wind_gusts_10m"].as<JsonArray>();
+  auto arrPrecip = hourly["precipitation"].as<JsonArray>();
+  auto arrRain = hourly["rain"].as<JsonArray>();
+  auto arrProb = hourly["precipitation_probability"].as<JsonArray>();
+  auto arrVis = hourly["visibility"].as<JsonArray>();
+  auto arrUv = hourly["uv_index"].as<JsonArray>();
+  auto arrCode = hourly["weather_code"].as<JsonArray>();
+
+  if (nowIndex >= 0 && nowIndex < static_cast<int>(times.size())) {
+    w.uv = arrUv[nowIndex] | NAN;
+    w.visibility = arrVis[nowIndex] | NAN;
+    w.precipitationProbability = static_cast<uint8_t>(arrProb[nowIndex] | 0);
+    if (nowIndex >= 6) {
+      const float oldPressure = arrPressure[nowIndex - 6] | NAN;
+      if (finite(w.pressure) && finite(oldPressure)) w.pressureDelta6h = w.pressure - oldPressure;
+    }
+  }
+
+  for (size_t n = 0; n < w.hourly.size(); ++n) {
+    const int i = nowIndex + static_cast<int>(n);
+    if (i < 0 || i >= static_cast<int>(times.size())) break;
+    HourForecast& h = w.hourly[n];
+    copyHm_(h.time, times[i] | "");
+    h.temperature = arrTemp[i] | NAN;
+    h.apparent = arrApp[i] | NAN;
+    h.humidity = arrHum[i] | NAN;
+    h.dewPoint = arrDew[i] | NAN;
+    h.pressure = arrPressure[i] | NAN;
+    h.wind = arrWind[i] | NAN;
+    h.windDirection = arrDir[i] | NAN;
+    h.gust = arrGust[i] | NAN;
+    h.precipitation = arrPrecip[i] | NAN;
+    h.rain = arrRain[i] | NAN;
+    h.precipitationProbability = static_cast<uint8_t>(arrProb[i] | 0);
+    h.visibility = arrVis[i] | NAN;
+    h.uv = arrUv[i] | NAN;
+    h.weatherCode = arrCode[i] | -1;
+    ++w.hourlyCount;
+  }
+
+  JsonObject daily = doc["daily"];
+  JsonArray dates = daily["time"];
+  auto dMax = daily["temperature_2m_max"].as<JsonArray>();
+  auto dMin = daily["temperature_2m_min"].as<JsonArray>();
+  auto dPrecip = daily["precipitation_sum"].as<JsonArray>();
+  auto dProb = daily["precipitation_probability_max"].as<JsonArray>();
+  auto dCode = daily["weather_code"].as<JsonArray>();
+  auto dSunrise = daily["sunrise"].as<JsonArray>();
+  auto dSunset = daily["sunset"].as<JsonArray>();
+  auto dUv = daily["uv_index_max"].as<JsonArray>();
+
+  for (size_t i = 0; i < w.daily.size() && i < dates.size(); ++i) {
+    DayForecast& d = w.daily[i];
+    copyDate_(d.date, dates[i] | "");
+    d.maximum = dMax[i] | NAN;
+    d.minimum = dMin[i] | NAN;
+    d.precipitation = dPrecip[i] | NAN;
+    d.precipitationProbability = static_cast<uint8_t>(dProb[i] | 0);
+    d.weatherCode = dCode[i] | -1;
+    copyHm_(d.sunrise, dSunrise[i] | "");
+    copyHm_(d.sunset, dSunset[i] | "");
+    d.uvMax = dUv[i] | NAN;
+    ++w.dailyCount;
+  }
+
+  w.valid = finite(w.temperature);
+  w.fromCache = false;
+  w.fetchedAt = time(nullptr);
+  if (w.fetchedAt < 1609459200) w.fetchedAt = 0;
+  out = w;
+  return w.valid;
+}
+
+bool OpenMeteoClient::fetchAir(AirSnapshot& out) {
+  JsonDocument doc;
+  if (!getJson_(airUrl_(), doc, "air")) return false;
+  JsonObject c = doc["current"];
+  AirSnapshot a{};
+  a.pm25 = c["pm2_5"] | NAN;
+  a.pm10 = c["pm10"] | NAN;
+  a.co = c["carbon_monoxide"] | NAN;
+  a.no2 = c["nitrogen_dioxide"] | NAN;
+  a.so2 = c["sulphur_dioxide"] | NAN;
+  a.ozone = c["ozone"] | NAN;
+  a.europeanAqi = c["european_aqi"] | NAN;
+  a.usAqi = c["us_aqi"] | NAN;
+  a.dust = c["dust"] | NAN;
+  a.valid = finite(a.europeanAqi) || finite(a.pm25);
+  a.fromCache = false;
+  a.fetchedAt = time(nullptr);
+  if (a.fetchedAt < 1609459200) a.fetchedAt = 0;
+  out = a;
+  return a.valid;
+}
+
+}  // namespace ws
+
+// ====================== src/StorageService.cpp ======================
+namespace ws {
+namespace {
+constexpr uint32_t kCacheMagic = 0x32535758;  // "XWS2"
+constexpr uint16_t kCacheSchema = 2;
+constexpr const char* kDir = "/ws2";
+constexpr const char* kCacheFile = "/ws2/cache.bin";
+constexpr const char* kCacheTemp = "/ws2/cache.tmp";
+constexpr const char* kCacheBackup = "/ws2/cache.bak";
+constexpr const char* kHistoryFile = "/ws2/history.csv";
+
+struct CacheHeader {
+  uint32_t magic;
+  uint16_t schema;
+  uint16_t reserved;
+  uint32_t weatherSize;
+  uint32_t airSize;
+  uint32_t hash;
+};
+
+struct LiteCache {
+  uint32_t magic = kCacheMagic;
+  uint16_t schema = kCacheSchema;
+  uint16_t reserved = 0;
+  WeatherSnapshot weather{};
+  AirSnapshot air{};
+};
+}
+
+bool StorageService::beginSd_() {
+  if (board::kSdProfile == board::SdProfile::SharedLcdBusCs41) {
+    SPI.begin(board::kSharedSdSclk, board::kSharedSdMiso, board::kSharedSdMosi, board::kSharedSdCs);
+    return SD.begin(board::kSharedSdCs, SPI, 10000000);
+  }
+  return SD.begin(board::kLegacySdCs);
+}
+
+bool StorageService::begin() {
+  sdAvailable_ = beginSd_();
+  Serial.printf("[storage] TF card: %s\n", sdAvailable_ ? "ready" : "not mounted");
+  if (sdAvailable_) ensureFiles_();
+  return sdAvailable_;
+}
+
+void StorageService::ensureFiles_() {
+  if (!SD.exists(kDir)) SD.mkdir(kDir);
+  if (!SD.exists(kHistoryFile)) {
+    File f = SD.open(kHistoryFile, FILE_WRITE);
+    if (f) {
+      f.println("epoch,temperature_c,apparent_c,humidity_pct,dewpoint_c,pressure_hpa,wind_kmh,gust_kmh,wind_deg,rain_mm,precip_mm,uv,aqi_eu,pm25,pm10,battery_v");
+      f.close();
+    }
+  }
+}
+
+uint32_t StorageService::hash_(const uint8_t* data, size_t size, uint32_t seed) {
+  uint32_t h = seed;
+  for (size_t i = 0; i < size; ++i) {
+    h ^= data[i];
+    h *= 16777619u;
+  }
+  return h;
+}
+
+bool StorageService::loadSdCacheFile_(const char* path, WeatherSnapshot& weather, AirSnapshot& air) {
+  if (!sdAvailable_ || !SD.exists(path)) return false;
+  File f = SD.open(path, FILE_READ);
+  if (!f) return false;
+  CacheHeader h{};
+  if (f.read(reinterpret_cast<uint8_t*>(&h), sizeof(h)) != sizeof(h) || h.magic != kCacheMagic || h.schema != kCacheSchema || h.weatherSize != sizeof(WeatherSnapshot) || h.airSize != sizeof(AirSnapshot)) {
+    f.close();
+    return false;
+  }
+  WeatherSnapshot w{};
+  AirSnapshot a{};
+  const bool full = f.read(reinterpret_cast<uint8_t*>(&w), sizeof(w)) == sizeof(w) && f.read(reinterpret_cast<uint8_t*>(&a), sizeof(a)) == sizeof(a);
+  f.close();
+  if (!full) return false;
+  uint32_t hash = hash_(reinterpret_cast<const uint8_t*>(&w), sizeof(w));
+  hash = hash_(reinterpret_cast<const uint8_t*>(&a), sizeof(a), hash);
+  if (hash != h.hash) return false;
+  w.fromCache = w.valid;
+  a.fromCache = a.valid;
+  weather = w;
+  air = a;
+  return weather.valid || air.valid;
+}
+
+bool StorageService::loadSdCache_(WeatherSnapshot& weather, AirSnapshot& air) {
+  if (loadSdCacheFile_(kCacheFile, weather, air)) return true;
+  if (loadSdCacheFile_(kCacheBackup, weather, air)) {
+    Serial.println("[storage] primary cache invalid; recovered backup");
+    return true;
+  }
+  return false;
+}
+
+bool StorageService::loadNvsCache_(WeatherSnapshot& weather, AirSnapshot& air) {
+  if (!prefs_.begin("weather-cache", true)) return false;
+  LiteCache c{};
+  const size_t got = prefs_.getBytes("snapshot", &c, sizeof(c));
+  prefs_.end();
+  if (got != sizeof(c) || c.magic != kCacheMagic || c.schema != kCacheSchema) return false;
+  c.weather.fromCache = c.weather.valid;
+  c.air.fromCache = c.air.valid;
+  weather = c.weather;
+  air = c.air;
+  return weather.valid || air.valid;
+}
+
+bool StorageService::loadCache(WeatherSnapshot& weather, AirSnapshot& air) {
+  if (loadSdCache_(weather, air)) {
+    Serial.println("[storage] restored full SD cache");
+    return true;
+  }
+  if (loadNvsCache_(weather, air)) {
+    Serial.println("[storage] restored NVS cache");
+    return true;
+  }
+  return false;
+}
+
+void StorageService::saveSdCache_(const WeatherSnapshot& weather, const AirSnapshot& air) {
+  if (!sdAvailable_) return;
+  CacheHeader h{};
+  h.magic = kCacheMagic;
+  h.schema = kCacheSchema;
+  h.weatherSize = sizeof(weather);
+  h.airSize = sizeof(air);
+  h.hash = hash_(reinterpret_cast<const uint8_t*>(&weather), sizeof(weather));
+  h.hash = hash_(reinterpret_cast<const uint8_t*>(&air), sizeof(air), h.hash);
+
+  File f = SD.open(kCacheTemp, FILE_WRITE);
+  if (!f) return;
+  const bool ok = f.write(reinterpret_cast<const uint8_t*>(&h), sizeof(h)) == sizeof(h) && f.write(reinterpret_cast<const uint8_t*>(&weather), sizeof(weather)) == sizeof(weather) && f.write(reinterpret_cast<const uint8_t*>(&air), sizeof(air)) == sizeof(air);
+  f.flush();
+  f.close();
+  if (!ok) {
+    SD.remove(kCacheTemp);
+    return;
+  }
+
+  WeatherSnapshot verifyWeather{};
+  AirSnapshot verifyAir{};
+  if (!loadSdCacheFile_(kCacheTemp, verifyWeather, verifyAir)) {
+    Serial.println("[storage] cache readback verification failed");
+    SD.remove(kCacheTemp);
+    return;
+  }
+
+  // Two-generation commit. Preserve the last known-good snapshot until the
+  // new file has been promoted. FAT rename is not a database transaction,
+  // so keeping a backup closes the dangerous remove-then-power-loss window.
+  SD.remove(kCacheBackup);
+  if (SD.exists(kCacheFile) && !SD.rename(kCacheFile, kCacheBackup)) {
+    SD.remove(kCacheTemp);
+    return;
+  }
+  if (!SD.rename(kCacheTemp, kCacheFile)) {
+    if (SD.exists(kCacheBackup)) SD.rename(kCacheBackup, kCacheFile);
+    SD.remove(kCacheTemp);
+    return;
+  }
+  SD.remove(kCacheBackup);
+}
+
+void StorageService::saveNvsCache_(const WeatherSnapshot& weather, const AirSnapshot& air) {
+  LiteCache c{};
+  c.weather = weather;
+  c.air = air;
+  if (!prefs_.begin("weather-cache", false)) return;
+  prefs_.putBytes("snapshot", &c, sizeof(c));
+  prefs_.end();
+}
+
+void StorageService::appendHistory_(const AppSnapshot& s) {
+  if (!sdAvailable_ || !s.weather.valid) return;
+  File f = SD.open(kHistoryFile, FILE_APPEND);
+  if (!f) return;
+  const time_t epoch = time(nullptr);
+  f.printf("%lld,%.2f,%.2f,%.1f,%.2f,%.2f,%.2f,%.2f,%.1f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.3f\n",
+           static_cast<long long>(epoch), s.weather.temperature, s.weather.apparent,
+           s.weather.humidity, s.weather.dewPoint, s.weather.pressure,
+           s.weather.wind, s.weather.gust, s.weather.windDirection,
+           s.weather.rain, s.weather.precipitation, s.weather.uv,
+           s.air.europeanAqi, s.air.pm25, s.air.pm10, s.system.batteryVoltage);
+  f.close();
+  ++historySamples_;
+}
+
+void StorageService::service(const AppSnapshot& s) {
+  const bool weatherChanged = s.weather.valid && !s.weather.fromCache && s.weather.fetchedAt != 0 && s.weather.fetchedAt != lastWeatherCached_;
+  const bool airChanged = s.air.valid && !s.air.fromCache && s.air.fetchedAt != 0 && s.air.fetchedAt != lastAirCached_;
+
+  if (weatherChanged || airChanged) {
+    saveSdCache_(s.weather, s.air);
+    lastWeatherCached_ = s.weather.fetchedAt;
+    lastAirCached_ = s.air.fetchedAt;
+
+    const time_t now = time(nullptr);
+    if (lastNvsCached_ == 0 || now - lastNvsCached_ >= 3600) {
+      saveNvsCache_(s.weather, s.air);
+      lastNvsCached_ = now;
+    }
+  }
+
+  if (millis() - lastHistoryMs_ >= config::kHistoryWriteMs) {
+    appendHistory_(s);
+    lastHistoryMs_ = millis();
+  }
+}
+
+}  // namespace ws
+
+// ====================== src/PowerService.cpp ======================
+namespace ws {
+
+void PowerService::begin() {
+  pinMode(board::kBacklight, OUTPUT);
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcAttach(board::kBacklight, board::kBacklightPwmHz, board::kBacklightPwmBits);
+#else
+  ledcSetup(board::kBacklightLegacyChannel, board::kBacklightPwmHz, board::kBacklightPwmBits);
+  ledcAttachPin(board::kBacklight, board::kBacklightLegacyChannel);
+#endif
+  setBacklight_(85);
+  analogReadResolution(12);
+  detectBattery_();
+  sampleBattery_();
+}
+
+float PowerService::readCandidate_(int pin, float divider) const {
+  uint32_t sum = 0;
+  constexpr int kSamples = 12;
+  for (int i = 0; i < kSamples; ++i) {
+    sum += analogReadMilliVolts(pin);
+    delayMicroseconds(120);
+  }
+  return (sum / static_cast<float>(kSamples)) / 1000.0f * divider;
+}
+
+void PowerService::detectBattery_() {
+  float bestScore = 999.0f;
+  for (const auto& c : board::kBatteryCandidates) {
+    pinMode(c.pin, INPUT);
+    const float v = readCandidate_(c.pin, c.divider);
+    if (v >= 3.0f && v <= 4.45f) {
+      const float score = fabsf(v - 3.80f);
+      if (score < bestScore) {
+        bestScore = score;
+        adcPin_ = c.pin;
+        divider_ = c.divider;
+      }
+    }
+  }
+  if (adcPin_ >= 0) Serial.printf("[power] battery ADC GPIO%d, divider %.2fx\n", adcPin_, divider_);
+  else Serial.println("[power] no plausible battery ADC detected");
+}
+
+int PowerService::socFromVoltage_(float v) {
+  struct Point {
+    float v;
+    int pct;
+  };
+  static constexpr Point curve[] = {
+    { 3.20f, 0 }, { 3.40f, 5 }, { 3.55f, 10 }, { 3.65f, 20 }, { 3.72f, 30 }, { 3.77f, 40 }, { 3.82f, 50 }, { 3.87f, 60 }, { 3.92f, 70 }, { 3.98f, 80 }, { 4.06f, 90 }, { 4.15f, 97 }, { 4.20f, 100 }
+  };
+  if (v <= curve[0].v) return 0;
+  if (v >= curve[12].v) return 100;
+  for (size_t i = 1; i < 13; ++i) {
+    if (v <= curve[i].v) {
+      const float t = (v - curve[i - 1].v) / (curve[i].v - curve[i - 1].v);
+      return static_cast<int>(roundf(curve[i - 1].pct + t * (curve[i].pct - curve[i - 1].pct)));
+    }
+  }
+  return 100;
+}
+
+void PowerService::sampleBattery_() {
+  if (adcPin_ < 0) {
+    voltage_ = NAN;
+    percent_ = -1;
+    return;
+  }
+  float samples[7]{};
+  for (float& sample : samples) sample = readCandidate_(adcPin_, divider_);
+  for (size_t i = 0; i < 7; ++i)
+    for (size_t j = i + 1; j < 7; ++j)
+      if (samples[j] < samples[i]) {
+        const float t = samples[i];
+        samples[i] = samples[j];
+        samples[j] = t;
+      }
+  const float median = samples[3];
+  voltage_ = std::isfinite(voltage_) ? voltage_ * 0.75f + median * 0.25f : median;
+  percent_ = socFromVoltage_(voltage_);
+}
+
+void PowerService::setBacklight_(uint8_t percent) {
+  percent = constrain(percent, 1, 100);
+  const uint8_t duty = static_cast<uint8_t>(roundf(percent * 255.0f / 100.0f));
+  if (duty == lastDuty_) return;
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcWrite(board::kBacklight, duty);
+#else
+  ledcWrite(board::kBacklightLegacyChannel, duty);
+#endif
+  lastDuty_ = duty;
+}
+
+void PowerService::service(const Settings& settings, const AppSnapshot& snapshot) {
+  if (millis() - lastSampleMs_ >= 2000) {
+    sampleBattery_();
+    lastSampleMs_ = millis();
+  }
+
+  uint8_t target = settings.brightnessPct;
+  if (settings.autoBrightness) {
+    bool day = snapshot.weather.valid ? snapshot.weather.isDay : true;
+    if (!snapshot.weather.valid) {
+      struct tm t {};
+      if (getLocalTime(&t, 10)) day = t.tm_hour >= 7 && t.tm_hour < 20;
+    }
+    target = day ? 82 : 28;
+  }
+  if (percent_ >= 0 && percent_ <= 15) target = std::min<uint8_t>(target, 45);
+  setBacklight_(target);
+}
+
+}  // namespace ws
+
+// ====================== src/ButtonService.cpp ======================
+namespace ws {
+
+void ButtonService::begin() {
+  pinMode(board::kBootButton, INPUT_PULLUP);
+  raw_ = stable_ = digitalRead(board::kBootButton);
+}
+
+ButtonService::Event ButtonService::service() {
+  const bool now = digitalRead(board::kBootButton);
+  if (now != raw_) {
+    raw_ = now;
+    rawChangedMs_ = millis();
+  }
+
+  if (raw_ != stable_ && millis() - rawChangedMs_ >= 25) {
+    stable_ = raw_;
+    if (stable_ == LOW) {
+      pressedMs_ = millis();
+      longFired_ = false;
+    } else if (!longFired_) {
+      if (clickPending_ && millis() - clickReleasedMs_ <= 380) {
+        clickPending_ = false;
+        return Event::DoubleClick;
+      }
+      clickPending_ = true;
+      clickReleasedMs_ = millis();
+    }
+  }
+
+  if (stable_ == LOW && !longFired_ && millis() - pressedMs_ >= 1200) {
+    longFired_ = true;
+    clickPending_ = false;
+    return Event::LongPress;
+  }
+
+  if (clickPending_ && millis() - clickReleasedMs_ > 380) {
+    clickPending_ = false;
+    return Event::Click;
+  }
+  return Event::None;
+}
+
+}  // namespace ws
+
+// ====================== src/DisplayService.cpp ======================
+namespace ws {
+
+DisplayService* DisplayService::instance_ = nullptr;
+
+uint32_t DisplayService::tick_() {
+  return millis();
+}
+
+void DisplayService::flush_(lv_display_t* display, const lv_area_t* area, uint8_t* pixels) {
+  if (!instance_ || !instance_->gfx_) {
+    lv_display_flush_ready(display);
+    return;
+  }
+  const uint32_t width = area->x2 - area->x1 + 1;
+  const uint32_t height = area->y2 - area->y1 + 1;
+  instance_->gfx_->draw16bitRGBBitmap(area->x1, area->y1, reinterpret_cast<uint16_t*>(pixels), width, height);
+  lv_display_flush_ready(display);
+}
+
+bool DisplayService::begin() {
+  instance_ = this;
+  bus_ = new Arduino_ESP32SPI(board::kLcdDc, board::kLcdCs, board::kLcdSclk, board::kLcdMosi, board::kLcdMiso);
+  gfx_ = new Arduino_ST7789(bus_, board::kLcdRst, 0, true, board::kLcdWidth, board::kLcdHeight);
+  if (!bus_ || !gfx_ || !gfx_->begin()) {
+    Serial.println("[display] Arduino_GFX initialization failed");
+    return false;
+  }
+  gfx_->fillScreen(RGB565_BLACK);
+
+  lv_init();
+  lv_tick_set_cb(tick_);
+  display_ = lv_display_create(board::kLcdWidth, board::kLcdHeight);
+  if (!display_) return false;
+
+  constexpr size_t lines = 64;
+  const size_t bytes = board::kLcdWidth * lines * sizeof(lv_color_t);
+  buffer1_ = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+  buffer2_ = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+  if (!buffer1_ || !buffer2_) {
+    Serial.println("[display] LVGL DMA buffer allocation failed");
+    return false;
+  }
+  lv_display_set_buffers(display_, buffer1_, buffer2_, bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_display_set_flush_cb(display_, flush_);
+
+  screen_ = lv_screen_active();
+  lv_obj_remove_flag(screen_, LV_OBJ_FLAG_SCROLLABLE);
+  Serial.println("[display] 240x320 LVGL 9 display ready");
+  return true;
+}
+
+void DisplayService::service() {
+  lv_timer_handler();
+}
+
+void DisplayService::setRotation180(bool enabled) {
+  if (!gfx_ || enabled == rotation180_) return;
+  rotation180_ = enabled;
+  gfx_->setRotation(enabled ? 2 : 0);
+  if (screen_) lv_obj_invalidate(screen_);
+}
+
+}  // namespace ws
+
+// ====================== src/Format.cpp ======================
+namespace ws::fmt {
+
+String temperature(float c, const Settings& s, unsigned int decimals) {
+  if (!finite(c)) return "--";
+  if (s.temperatureUnit == TemperatureUnit::Fahrenheit) return String(c * 9.0f / 5.0f + 32.0f, decimals) + " F";
+  return String(c, decimals) + " C";
+}
+
+String wind(float kmh, const Settings& s, unsigned int decimals) {
+  if (!finite(kmh)) return "--";
+  switch (s.windUnit) {
+    case WindUnit::Mph: return String(kmh * 0.621371f, decimals) + " mph";
+    case WindUnit::Ms: return String(kmh / 3.6f, decimals) + " m/s";
+    default: return String(kmh, decimals) + " km/h";
+  }
+}
+
+String pressure(float hpa, const Settings& s, unsigned int decimals) {
+  if (!finite(hpa)) return "--";
+  if (s.pressureUnit == PressureUnit::InHg) return String(hpa * 0.029529983f, 2) + " inHg";
+  return String(hpa, decimals) + " hPa";
+}
+
+String visibility(float metres) {
+  if (!finite(metres)) return "--";
+  if (metres >= 1000.0f) return String(metres / 1000.0f, 1) + " km";
+  return String(metres, 0) + " m";
+}
+
+String direction(float degrees) {
+  if (!finite(degrees)) return "--";
+  static constexpr const char* dirs[] = { "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW" };
+  int i = static_cast<int>((degrees + 11.25f) / 22.5f) % 16;
+  if (i < 0) i += 16;
+  return dirs[i];
+}
+
+String weatherDescription(int code) {
+  switch (code) {
+    case 0: return "Clear sky";
+    case 1: return "Mainly clear";
+    case 2: return "Partly cloudy";
+    case 3: return "Overcast";
+    case 45:
+    case 48: return "Fog";
+    case 51:
+    case 53:
+    case 55: return "Drizzle";
+    case 56:
+    case 57: return "Freezing drizzle";
+    case 61:
+    case 63:
+    case 65: return "Rain";
+    case 66:
+    case 67: return "Freezing rain";
+    case 71:
+    case 73:
+    case 75: return "Snow";
+    case 77: return "Snow grains";
+    case 80:
+    case 81:
+    case 82: return "Rain showers";
+    case 85:
+    case 86: return "Snow showers";
+    case 95: return "Thunderstorm";
+    case 96:
+    case 99: return "Thunderstorm + hail";
+    default: return "Unknown";
+  }
+}
+
+String aqiCategory(float aqi) {
+  if (!finite(aqi)) return "Unknown";
+  if (aqi <= 20) return "Good";
+  if (aqi <= 40) return "Fair";
+  if (aqi <= 60) return "Moderate";
+  if (aqi <= 80) return "Poor";
+  if (aqi <= 100) return "Very poor";
+  return "Extremely poor";
+}
+
+String beaufortLabel(float kmh) {
+  if (!finite(kmh)) return "--";
+  const float limits[] = { 1, 6, 12, 20, 29, 39, 50, 62, 75, 89, 103, 118 };
+  int force = 12;
+  for (int i = 0; i < 12; ++i)
+    if (kmh < limits[i]) {
+      force = i;
+      break;
+    }
+  return "Bft " + String(force);
+}
+
+String pressureTrend(float delta6h) {
+  if (!finite(delta6h)) return "6h trend --";
+  if (delta6h > 2.0f) return "Rising +" + String(delta6h, 1) + " hPa / 6h";
+  if (delta6h < -2.0f) return "Falling " + String(delta6h, 1) + " hPa / 6h";
+  return "Stable " + String(delta6h, 1) + " hPa / 6h";
+}
+
+String localTime() {
+  struct tm t {};
+  if (!getLocalTime(&t, 10)) return "--:--";
+  char b[6];
+  strftime(b, sizeof(b), "%H:%M", &t);
+  return b;
+}
+
+String localDate() {
+  struct tm t {};
+  if (!getLocalTime(&t, 10)) return "--- -- ---";
+  char b[16];
+  strftime(b, sizeof(b), "%a %d %b", &t);
+  return b;
+}
+
+String moonPhase() {
+  const time_t now = time(nullptr);
+  if (now < 946684800) return "Unknown";
+  constexpr double synodic = 29.530588853;
+  // 2000-01-06 18:14 UTC, a well-known new moon reference.
+  constexpr time_t reference = 947182440;
+  double days = difftime(now, reference) / 86400.0;
+  double fraction = fmod(days / synodic, 1.0);
+  if (fraction < 0) fraction += 1.0;
+  if (fraction < 0.0625 || fraction >= 0.9375) return "New moon";
+  if (fraction < 0.1875) return "Waxing crescent";
+  if (fraction < 0.3125) return "First quarter";
+  if (fraction < 0.4375) return "Waxing gibbous";
+  if (fraction < 0.5625) return "Full moon";
+  if (fraction < 0.6875) return "Waning gibbous";
+  if (fraction < 0.8125) return "Last quarter";
+  return "Waning crescent";
+}
+
+const char* pageName(Page page) {
+  switch (page) {
+    case Page::Home: return "TODAY";
+    case Page::Hourly: return "48 HOURS";
+    case Page::Forecast: return "7 DAY";
+    case Page::Rain: return "RAIN";
+    case Page::Wind: return "WIND";
+    case Page::Atmosphere: return "ATMOSPHERE";
+    case Page::Air: return "AIR QUALITY";
+    case Page::Sun: return "SUN + MOON";
+    case Page::Alerts: return "ADVISORIES";
+    case Page::History: return "HISTORY";
+    case Page::System: return "SYSTEM";
+    default: return "WEATHER";
+  }
+}
+
+}  // namespace ws::fmt
+
+// ====================== src/WeatherService.cpp ======================
+namespace ws {
+
+bool WeatherService::begin() {
+  if (task_) return true;
+  return xTaskCreatePinnedToCore(
+           taskEntry_, "weather-net", 12288, this, 1, &task_, 0)
+         == pdPASS;
+}
+
+void WeatherService::requestRefresh() {
+  forceRefresh_ = true;
+}
+
+void WeatherService::taskEntry_(void* arg) {
+  static_cast<WeatherService*>(arg)->run_();
+}
+
+void WeatherService::run_() {
+  uint32_t ntpGraceStartedMs = 0;
+  for (;;) {
+    if (WiFi.status() != WL_CONNECTED) {
+      ntpGraceStartedMs = 0;
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
+
+    if (time(nullptr) < 1609459200) {
+      if (ntpGraceStartedMs == 0) ntpGraceStartedMs = millis();
+      if (millis() - ntpGraceStartedMs < 4000) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+        continue;
+      }
+    }
+
+    const uint32_t now = millis();
+    const bool forced = forceRefresh_;
+    if (forced || lastWeatherMs_ == 0 || now - lastWeatherMs_ >= config::kWeatherRefreshMs) {
+      WeatherSnapshot w{};
+      Serial.println("[weather] refreshing forecast");
+      if (client_.fetchWeather(w)) {
+        store_.setWeather(w);
+        lastWeatherMs_ = millis();
+        Serial.println("[weather] forecast updated");
+      }
+    }
+
+    const uint32_t afterWeather = millis();
+    if (forced || lastAirMs_ == 0 || afterWeather - lastAirMs_ >= config::kAirRefreshMs) {
+      AirSnapshot a{};
+      Serial.println("[air] refreshing current air quality");
+      if (client_.fetchAir(a)) {
+        store_.setAir(a);
+        lastAirMs_ = millis();
+        Serial.println("[air] current air quality updated");
+      }
+    }
+
+    forceRefresh_ = false;
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+}
+
+}  // namespace ws
+
+// ====================== src/Ui.cpp ======================
+namespace ws {
+
+lv_color_t Ui::bg_() const {
+  return dark_ ? lv_color_hex(0x071018) : lv_color_hex(0xEDF3F8);
+}
+lv_color_t Ui::panel_() const {
+  return dark_ ? lv_color_hex(0x101C28) : lv_color_hex(0xFFFFFF);
+}
+lv_color_t Ui::panel2_() const {
+  return dark_ ? lv_color_hex(0x172738) : lv_color_hex(0xDDE8F1);
+}
+lv_color_t Ui::text_() const {
+  return dark_ ? lv_color_hex(0xF5F8FC) : lv_color_hex(0x13202C);
+}
+lv_color_t Ui::muted_() const {
+  return dark_ ? lv_color_hex(0x8DA0B2) : lv_color_hex(0x607384);
+}
+
+bool Ui::resolveDark_(const AppSnapshot& s) const {
+  if (settings_.theme == ThemeMode::Dark) return true;
+  if (settings_.theme == ThemeMode::Light) return false;
+  if (s.weather.valid) return !s.weather.isDay;
+  struct tm t {};
+  return !(getLocalTime(&t, 10) && t.tm_hour >= 7 && t.tm_hour < 20);
+}
+
+lv_obj_t* Ui::label_(lv_obj_t* parent, const char* text, int x, int y, int w, int h,
+                     const lv_font_t* font, lv_color_t color, lv_text_align_t align) {
+  lv_obj_t* o = lv_label_create(parent);
+  lv_label_set_text(o, text);
+  lv_obj_set_pos(o, x, y);
+  lv_obj_set_size(o, w, h);
+  lv_obj_set_style_text_font(o, font, 0);
+  lv_obj_set_style_text_color(o, color, 0);
+  lv_obj_set_style_text_align(o, align, 0);
+  lv_label_set_long_mode(o, LV_LABEL_LONG_CLIP);
+  return o;
+}
+
+lv_obj_t* Ui::card_(int x, int y, int w, int h, lv_color_t accent, bool accentEnabled) {
+  lv_obj_t* o = lv_obj_create(content_);
+  lv_obj_set_pos(o, x, y);
+  lv_obj_set_size(o, w, h);
+  lv_obj_set_style_radius(o, 12, 0);
+  lv_obj_set_style_bg_color(o, panel_(), 0);
+  lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(o, accentEnabled ? 1 : 0, 0);
+  if (accentEnabled) lv_obj_set_style_border_color(o, accent, 0);
+  lv_obj_set_style_pad_all(o, 0, 0);
+  lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+  return o;
+}
+
+void Ui::metricCard_(size_t slot, const char* caption, int x, int y, int w, int h, lv_color_t accent) {
+  lv_obj_t* c = card_(x, y, w, h);
+  label_(c, caption, 9, 7, w - 18, 14, &lv_font_montserrat_16, muted_());
+  value_[slot] = label_(c, "--", 9, 24, w - 18, h - 27, &lv_font_montserrat_16, accent);
+}
+
+void Ui::clearPageRefs_() {
+  value_.fill(nullptr);
+  chart_ = nullptr;
+  chartSeries_ = nullptr;
+}
+
+void Ui::buildShell_() {
+  root_ = display_.screen();
+  lv_obj_clean(root_);
+  lv_obj_set_style_bg_color(root_, bg_(), 0);
+  lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
+  lv_obj_set_style_pad_all(root_, 0, 0);
+  lv_obj_remove_flag(root_, LV_OBJ_FLAG_SCROLLABLE);
+
+  header_ = lv_obj_create(root_);
+  lv_obj_set_pos(header_, 0, 0);
+  lv_obj_set_size(header_, 240, 48);
+  lv_obj_set_style_bg_color(header_, bg_(), 0);
+  lv_obj_set_style_bg_opa(header_, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(header_, 0, 0);
+  lv_obj_set_style_pad_all(header_, 0, 0);
+  lv_obj_remove_flag(header_, LV_OBJ_FLAG_SCROLLABLE);
+
+  headerLocation_ = label_(header_, config::kLocationName, 9, 4, 105, 18, &lv_font_montserrat_16, muted_());
+  headerTime_ = label_(header_, "--:--", 174, 3, 57, 20, &lv_font_montserrat_16, cyan_(), LV_TEXT_ALIGN_RIGHT);
+  headerPage_ = label_(header_, fmt::pageName(page_), 9, 23, 135, 22, &lv_font_montserrat_16, text_());
+  headerStatus_ = label_(header_, "OFF  --%", 145, 26, 86, 16, &lv_font_montserrat_16, muted_(), LV_TEXT_ALIGN_RIGHT);
+
+  content_ = lv_obj_create(root_);
+  lv_obj_set_pos(content_, 0, 48);
+  lv_obj_set_size(content_, 240, 240);
+  lv_obj_set_style_bg_color(content_, bg_(), 0);
+  lv_obj_set_style_bg_opa(content_, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(content_, 0, 0);
+  lv_obj_set_style_pad_all(content_, 0, 0);
+  lv_obj_remove_flag(content_, LV_OBJ_FLAG_SCROLLABLE);
+
+  footer_ = lv_obj_create(root_);
+  lv_obj_set_pos(footer_, 0, 288);
+  lv_obj_set_size(footer_, 240, 32);
+  lv_obj_set_style_bg_color(footer_, bg_(), 0);
+  lv_obj_set_style_bg_opa(footer_, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(footer_, 0, 0);
+  lv_obj_set_style_pad_all(footer_, 0, 0);
+  lv_obj_remove_flag(footer_, LV_OBJ_FLAG_SCROLLABLE);
+  footerInfo_ = label_(footer_, "", 9, 7, 222, 18, &lv_font_montserrat_16, muted_(), LV_TEXT_ALIGN_CENTER);
+}
+
+void Ui::begin() {
+  const AppSnapshot s = store_.snapshot();
+  dark_ = resolveDark_(s);
+  page_ = settings_.lastPage;
+  buildShell_();
+  buildPage_();
+  refresh_(s, true);
+  lastCarouselMs_ = millis();
+}
+
+void Ui::settingsChanged(bool rebuild) {
+  const AppSnapshot s = store_.snapshot();
+  const bool newDark = resolveDark_(s);
+  if (rebuild || newDark != dark_) {
+    dark_ = newDark;
+    buildShell_();
+    buildPage_();
+  }
+  refresh_(s, true);
+}
+
+void Ui::setPage(Page p) {
+  if (static_cast<uint8_t>(p) >= static_cast<uint8_t>(Page::Count)) p = Page::Home;
+  page_ = p;
+  if (content_) {
+    lv_obj_clean(content_);
+    clearPageRefs_();
+    buildPage_();
+    refresh_(store_.snapshot(), true);
+  }
+  lastCarouselMs_ = millis();
+}
+
+void Ui::nextPage() {
+  uint8_t n = static_cast<uint8_t>(page_) + 1;
+  if (n >= static_cast<uint8_t>(Page::Count)) n = 0;
+  setPage(static_cast<Page>(n));
+}
+
+void Ui::home() {
+  setPage(Page::Home);
+}
+
+void Ui::buildPage_() {
+  lv_label_set_text(headerPage_, fmt::pageName(page_));
+  switch (page_) {
+    case Page::Home: buildHome_(); break;
+    case Page::Hourly: buildHourly_(); break;
+    case Page::Forecast: buildForecast_(); break;
+    case Page::Rain: buildRain_(); break;
+    case Page::Wind: buildWind_(); break;
+    case Page::Atmosphere: buildAtmosphere_(); break;
+    case Page::Air: buildAir_(); break;
+    case Page::Sun: buildSun_(); break;
+    case Page::Alerts: buildAlerts_(store_.snapshot()); break;
+    case Page::History: buildHistory_(); break;
+    case Page::System: buildSystem_(); break;
+    default: break;
+  }
+  const String footer = String(static_cast<uint8_t>(page_) + 1) + "/" + String(static_cast<uint8_t>(Page::Count)) + (settings_.carousel ? "   AUTO ON" : "   AUTO OFF") + "   HOLD=HOME";
+  lv_label_set_text(footerInfo_, footer.c_str());
+}
+
+void Ui::buildHome_() {
+  lv_obj_t* hero = card_(8, 4, 224, 91);
+  value_[0] = label_(hero, "--", 12, 8, 135, 39, &lv_font_montserrat_32, text_());
+  value_[1] = label_(hero, "Waiting for weather", 12, 49, 196, 18, &lv_font_montserrat_16, cyan_());
+  value_[2] = label_(hero, "Feels --", 12, 69, 196, 16, &lv_font_montserrat_16, muted_());
+  metricCard_(3, "HUMIDITY", 8, 103, 108, 57, cyan_());
+  metricCard_(4, "UV INDEX", 124, 103, 108, 57, yellow_());
+  metricCard_(5, "WIND", 8, 168, 108, 57, green_());
+  metricCard_(6, "AIR QUALITY", 124, 168, 108, 57, purple_());
+  value_[7] = label_(content_, "Pressure --", 12, 226, 216, 14, &lv_font_montserrat_16, muted_(), LV_TEXT_ALIGN_CENTER);
+}
+
+void Ui::buildHourly_() {
+  lv_obj_t* c = card_(8, 4, 224, 122);
+  chart_ = lv_chart_create(c);
+  lv_obj_set_pos(chart_, 8, 8);
+  lv_obj_set_size(chart_, 208, 104);
+  lv_obj_set_style_bg_opa(chart_, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(chart_, 0, 0);
+  lv_obj_set_style_line_color(chart_, panel2_(), LV_PART_MAIN);
+  lv_chart_set_type(chart_, LV_CHART_TYPE_LINE);
+  lv_chart_set_point_count(chart_, 24);
+  lv_chart_set_div_line_count(chart_, 4, 4);
+  chartSeries_ = lv_chart_add_series(chart_, yellow_(), LV_CHART_AXIS_PRIMARY_Y);
+  metricCard_(0, "NOW", 8, 134, 108, 47, yellow_());
+  metricCard_(1, "RAIN NEXT HOUR", 124, 134, 108, 47, blue_());
+  metricCard_(2, "24H RANGE", 8, 188, 108, 47, cyan_());
+  metricCard_(3, "PRESSURE", 124, 188, 108, 47, green_());
+}
+
+void Ui::buildForecast_() {
+  for (size_t i = 0; i < 7; ++i) {
+    lv_obj_t* c = card_(8, 3 + static_cast<int>(i) * 33, 224, 29);
+    value_[i] = label_(c, "--", 8, 6, 208, 18, &lv_font_montserrat_16, i == 0 ? yellow_() : text_());
+  }
+}
+
+void Ui::buildRain_() {
+  lv_obj_t* hero = card_(8, 4, 224, 70);
+  value_[0] = label_(hero, "-- mm now", 12, 8, 200, 27, &lv_font_montserrat_32, cyan_());
+  value_[1] = label_(hero, "Chance --", 12, 39, 200, 18, &lv_font_montserrat_16, blue_());
+  value_[2] = label_(content_, "Scanning next 48 hours", 10, 82, 220, 20, &lv_font_montserrat_16, yellow_(), LV_TEXT_ALIGN_CENTER);
+  for (size_t i = 0; i < 8; ++i) {
+    value_[3 + i] = label_(content_, "--:--     --%     -- mm", 15, 111 + static_cast<int>(i) * 15, 210, 15, &lv_font_montserrat_16, i < 3 ? text_() : muted_());
+  }
+}
+
+void Ui::buildWind_() {
+  lv_obj_t* hero = card_(8, 4, 224, 91);
+  value_[0] = label_(hero, "--", 12, 10, 155, 35, &lv_font_montserrat_32, green_());
+  value_[1] = label_(hero, "--", 170, 8, 42, 35, &lv_font_montserrat_32, cyan_(), LV_TEXT_ALIGN_RIGHT);
+  value_[2] = label_(hero, "-- degrees", 12, 51, 200, 18, &lv_font_montserrat_16, muted_());
+  metricCard_(3, "GUST", 8, 103, 108, 57, orange_());
+  metricCard_(4, "BEAUFORT", 124, 103, 108, 57, yellow_());
+  metricCard_(5, "NEXT 6H PEAK", 8, 168, 224, 57, red_());
+}
+
+void Ui::buildAtmosphere_() {
+  metricCard_(0, "PRESSURE", 8, 4, 224, 57, cyan_());
+  value_[1] = label_(content_, "6h trend --", 12, 68, 216, 19, &lv_font_montserrat_16, green_(), LV_TEXT_ALIGN_CENTER);
+  metricCard_(2, "HUMIDITY", 8, 96, 108, 57, blue_());
+  metricCard_(3, "DEW POINT", 124, 96, 108, 57, cyan_());
+  metricCard_(4, "VISIBILITY", 8, 161, 108, 57, green_());
+  metricCard_(5, "PRECIP", 124, 161, 108, 57, purple_());
+}
+
+void Ui::buildAir_() {
+  lv_obj_t* hero = card_(8, 4, 224, 67);
+  value_[0] = label_(hero, "AQI --", 12, 8, 105, 30, &lv_font_montserrat_24, purple_());
+  value_[1] = label_(hero, "Unknown", 120, 12, 92, 24, &lv_font_montserrat_16, text_(), LV_TEXT_ALIGN_RIGHT);
+  value_[2] = label_(hero, "European AQI", 12, 43, 200, 16, &lv_font_montserrat_16, muted_());
+  metricCard_(3, "PM2.5", 8, 79, 108, 47, cyan_());
+  metricCard_(4, "PM10", 124, 79, 108, 47, blue_());
+  metricCard_(5, "OZONE", 8, 134, 108, 47, green_());
+  metricCard_(6, "NO2", 124, 134, 108, 47, yellow_());
+  metricCard_(7, "SO2", 8, 189, 108, 47, orange_());
+  metricCard_(8, "CO", 124, 189, 108, 47, red_());
+}
+
+void Ui::buildSun_() {
+  metricCard_(0, "SUNRISE", 8, 4, 108, 65, yellow_());
+  metricCard_(1, "SUNSET", 124, 4, 108, 65, orange_());
+  metricCard_(2, "STATUS", 8, 78, 224, 54, cyan_());
+  metricCard_(3, "UV NOW", 8, 140, 108, 54, yellow_());
+  metricCard_(4, "MOON", 124, 140, 108, 54, purple_());
+  value_[5] = label_(content_, fmt::localDate().c_str(), 10, 208, 220, 20, &lv_font_montserrat_16, muted_(), LV_TEXT_ALIGN_CENTER);
+}
+
+void Ui::buildAlerts_(const AppSnapshot& s) {
+  struct Alert {
+    String text;
+    lv_color_t color;
+  } alerts[7];
+  int count = 0;
+  if (s.weather.valid) {
+    if (s.weather.temperature >= 40) alerts[count++] = { "Extreme heat", red_() };
+    else if (s.weather.temperature >= 35) alerts[count++] = { "High temperature", orange_() };
+    if (s.weather.gust >= 65 || s.weather.wind >= 50) alerts[count++] = { "High wind", red_() };
+    int maxRain = 0;
+    for (int i = 0; i < s.weather.hourlyCount && i < 6; ++i) maxRain = std::max(maxRain, static_cast<int>(s.weather.hourly[i].precipitationProbability));
+    if (maxRain >= 70) alerts[count++] = { "High rain chance / 6h", blue_() };
+    if (s.weather.uv >= 8) alerts[count++] = { "Very high UV", red_() };
+    else if (s.weather.uv >= 6) alerts[count++] = { "High UV", yellow_() };
+    if (s.weather.weatherCode >= 95) alerts[count++] = { "Thunderstorm signal", purple_() };
+    if (s.weather.pressureDelta6h <= -4.0f) alerts[count++] = { "Rapid pressure fall", orange_() };
+  }
+  if (s.air.valid && s.air.europeanAqi >= 80 && count < 7) alerts[count++] = { "Poor air quality", red_() };
+  if (count == 0) alerts[count++] = { "No active local advisories", green_() };
+
+  label_(content_, "Threshold advisories - not official warnings", 9, 2, 222, 18, &lv_font_montserrat_16, muted_(), LV_TEXT_ALIGN_CENTER);
+  for (int i = 0; i < count && i < 6; ++i) {
+    lv_obj_t* c = card_(8, 27 + i * 34, 224, 29, alerts[i].color, true);
+    label_(c, alerts[i].text.c_str(), 9, 6, 206, 18, &lv_font_montserrat_16, alerts[i].color);
+  }
+}
+
+void Ui::buildHistory_() {
+  metricCard_(0, "TF CARD", 8, 4, 224, 54, green_());
+  metricCard_(1, "STORAGE USED", 8, 66, 108, 54, cyan_());
+  metricCard_(2, "STORAGE TOTAL", 124, 66, 108, 54, blue_());
+  metricCard_(3, "SESSION SAMPLES", 8, 128, 224, 54, yellow_());
+  value_[4] = label_(content_, "/ws2/history.csv", 10, 194, 220, 18, &lv_font_montserrat_16, purple_(), LV_TEXT_ALIGN_CENTER);
+  value_[5] = label_(content_, "15-minute durable logging", 10, 216, 220, 18, &lv_font_montserrat_16, muted_(), LV_TEXT_ALIGN_CENTER);
+}
+
+void Ui::buildSystem_() {
+  for (size_t i = 0; i < 8; ++i) {
+    value_[i] = label_(content_, "--", 10, 4 + static_cast<int>(i) * 27, 220, 22,
+                       i == 0 ? &lv_font_montserrat_16 : &lv_font_montserrat_16,
+                       i == 0 ? cyan_() : text_());
+  }
+  value_[8] = label_(content_, "Weather Station V2", 10, 220, 220, 18, &lv_font_montserrat_16, purple_(), LV_TEXT_ALIGN_CENTER);
+}
+
+void Ui::refreshHeader_(const AppSnapshot& s) {
+  lv_label_set_text(headerTime_, fmt::localTime().c_str());
+  String st = s.system.wifiConnected ? "NET" : "OFF";
+  st += "  ";
+  st += s.system.batteryPercent >= 0 ? String(s.system.batteryPercent) + "%" : "--%";
+  lv_label_set_text(headerStatus_, st.c_str());
+  lv_obj_set_style_text_color(headerStatus_, s.system.wifiConnected ? green_() : red_(), 0);
+}
+
+void Ui::refreshHome_(const AppSnapshot& s) {
+  const auto& w = s.weather;
+  lv_label_set_text(value_[0], fmt::temperature(w.temperature, settings_).c_str());
+  String desc = fmt::weatherDescription(w.weatherCode);
+  if (w.fromCache) desc += "  OFFLINE";
+  lv_label_set_text(value_[1], desc.c_str());
+  lv_label_set_text(value_[2], (String("Feels ") + fmt::temperature(w.apparent, settings_)).c_str());
+  lv_label_set_text(value_[3], finite(w.humidity) ? (String(w.humidity, 0) + "%").c_str() : "--");
+  lv_label_set_text(value_[4], finite(w.uv) ? String(w.uv, 1).c_str() : "--");
+  lv_label_set_text(value_[5], (fmt::direction(w.windDirection) + " " + fmt::wind(w.wind, settings_, 0)).c_str());
+  String aq = s.air.valid ? String(s.air.europeanAqi, 0) + " " + fmt::aqiCategory(s.air.europeanAqi) : "--";
+  lv_label_set_text(value_[6], aq.c_str());
+  lv_label_set_text(value_[7], (String("Pressure  ") + fmt::pressure(w.pressure, settings_, 0) + "   " + fmt::pressureTrend(w.pressureDelta6h)).c_str());
+}
+
+void Ui::refreshHourly_(const AppSnapshot& s) {
+  const auto& w = s.weather;
+  lv_label_set_text(value_[0], fmt::temperature(w.temperature, settings_, 0).c_str());
+  const int rain = w.hourlyCount ? w.hourly[0].precipitationProbability : 0;
+  lv_label_set_text(value_[1], (String(rain) + "%").c_str());
+  float lo = 999, hi = -999;
+  const int count = std::min<int>(24, w.hourlyCount);
+  for (int i = 0; i < count; ++i)
+    if (finite(w.hourly[i].temperature)) {
+      lo = std::min(lo, w.hourly[i].temperature);
+      hi = std::max(hi, w.hourly[i].temperature);
+    }
+  if (lo < 900) lv_label_set_text(value_[2], (fmt::temperature(lo, settings_, 0) + " / " + fmt::temperature(hi, settings_, 0)).c_str());
+  else lv_label_set_text(value_[2], "--");
+  lv_label_set_text(value_[3], fmt::pressureTrend(w.pressureDelta6h).c_str());
+
+  if (chart_ && chartSeries_) {
+    lv_chart_set_point_count(chart_, 24);
+    if (lo >= 900) {
+      lo = 0;
+      hi = 40;
+    }
+    float plotLo = lo, plotHi = hi;
+    if (settings_.temperatureUnit == TemperatureUnit::Fahrenheit) {
+      plotLo = lo * 1.8f + 32;
+      plotHi = hi * 1.8f + 32;
+    }
+    if (plotHi - plotLo < 4) {
+      plotLo -= 2;
+      plotHi += 2;
+    }
+    lv_chart_set_range(chart_, LV_CHART_AXIS_PRIMARY_Y, static_cast<int>(floorf(plotLo - 2)), static_cast<int>(ceilf(plotHi + 2)));
+    for (int i = 0; i < 24; ++i) {
+      int32_t v = LV_CHART_POINT_NONE;
+      if (i < count && finite(w.hourly[i].temperature)) {
+        float temp = w.hourly[i].temperature;
+        if (settings_.temperatureUnit == TemperatureUnit::Fahrenheit) temp = temp * 1.8f + 32;
+        v = static_cast<int32_t>(roundf(temp));
+      }
+      lv_chart_set_value_by_id(chart_, chartSeries_, i, v);
+    }
+    lv_chart_refresh(chart_);
+  }
+}
+
+void Ui::refreshForecast_(const AppSnapshot& s) {
+  for (size_t i = 0; i < 7; ++i) {
+    if (!value_[i]) continue;
+    if (i >= s.weather.dailyCount) {
+      lv_label_set_text(value_[i], "--");
+      continue;
+    }
+    const DayForecast& d = s.weather.daily[i];
+    String row = String(i == 0 ? "TODAY " : d.date + 5) + "  " + fmt::temperature(d.minimum, settings_, 0) + "/" + fmt::temperature(d.maximum, settings_, 0) + "  " + String(d.precipitationProbability) + "%  " + fmt::weatherDescription(d.weatherCode);
+    lv_label_set_text(value_[i], row.c_str());
+  }
+}
+
+void Ui::refreshRain_(const AppSnapshot& s) {
+  const auto& w = s.weather;
+  lv_label_set_text(value_[0], finite(w.rain) ? (String(w.rain, 1) + " mm now").c_str() : "-- mm now");
+  lv_label_set_text(value_[1], (String("Chance ") + String(w.precipitationProbability) + "%").c_str());
+  int first = -1;
+  for (int i = 0; i < w.hourlyCount; ++i)
+    if (w.hourly[i].precipitationProbability >= 50) {
+      first = i;
+      break;
+    }
+  String signal = first < 0 ? "No >=50% rain signal / 48h" : (first == 0 ? "Rain signal now" : "Rain signal in ~" + String(first) + "h");
+  lv_label_set_text(value_[2], signal.c_str());
+  for (int i = 0; i < 8; ++i) {
+    if (!value_[3 + i]) continue;
+    if (i >= w.hourlyCount) {
+      lv_label_set_text(value_[3 + i], "--");
+      continue;
+    }
+    const auto& h = w.hourly[i];
+    String row = String(h.time) + "      " + String(h.precipitationProbability) + "%      " + (finite(h.precipitation) ? String(h.precipitation, 1) : "--") + " mm";
+    lv_label_set_text(value_[3 + i], row.c_str());
+  }
+}
+
+void Ui::refreshWind_(const AppSnapshot& s) {
+  const auto& w = s.weather;
+  lv_label_set_text(value_[0], fmt::wind(w.wind, settings_).c_str());
+  lv_label_set_text(value_[1], fmt::direction(w.windDirection).c_str());
+  lv_label_set_text(value_[2], finite(w.windDirection) ? (String(w.windDirection, 0) + " degrees").c_str() : "-- degrees");
+  lv_label_set_text(value_[3], fmt::wind(w.gust, settings_).c_str());
+  lv_label_set_text(value_[4], fmt::beaufortLabel(w.wind).c_str());
+  float peak = NAN;
+  for (int i = 0; i < w.hourlyCount && i < 6; ++i)
+    if (!finite(peak) || w.hourly[i].gust > peak) peak = w.hourly[i].gust;
+  lv_label_set_text(value_[5], fmt::wind(peak, settings_).c_str());
+}
+
+void Ui::refreshAtmosphere_(const AppSnapshot& s) {
+  const auto& w = s.weather;
+  lv_label_set_text(value_[0], fmt::pressure(w.pressure, settings_).c_str());
+  lv_label_set_text(value_[1], fmt::pressureTrend(w.pressureDelta6h).c_str());
+  lv_label_set_text(value_[2], finite(w.humidity) ? (String(w.humidity, 0) + "%").c_str() : "--");
+  lv_label_set_text(value_[3], fmt::temperature(w.dewPoint, settings_).c_str());
+  lv_label_set_text(value_[4], fmt::visibility(w.visibility).c_str());
+  lv_label_set_text(value_[5], finite(w.precipitation) ? (String(w.precipitation, 1) + " mm").c_str() : "--");
+}
+
+void Ui::refreshAir_(const AppSnapshot& s) {
+  const auto& a = s.air;
+  lv_label_set_text(value_[0], a.valid ? (String("AQI ") + String(a.europeanAqi, 0)).c_str() : "AQI --");
+  lv_label_set_text(value_[1], fmt::aqiCategory(a.europeanAqi).c_str());
+  auto pollutant = [](float v, const char* unit) {
+    return finite(v) ? String(v, 1) + unit : String("--");
+  };
+  lv_label_set_text(value_[3], pollutant(a.pm25, " ug/m3").c_str());
+  lv_label_set_text(value_[4], pollutant(a.pm10, " ug/m3").c_str());
+  lv_label_set_text(value_[5], pollutant(a.ozone, " ug/m3").c_str());
+  lv_label_set_text(value_[6], pollutant(a.no2, " ug/m3").c_str());
+  lv_label_set_text(value_[7], pollutant(a.so2, " ug/m3").c_str());
+  lv_label_set_text(value_[8], pollutant(a.co, " ug/m3").c_str());
+}
+
+void Ui::refreshSun_(const AppSnapshot& s) {
+  const auto& w = s.weather;
+  const char* rise = w.dailyCount ? w.daily[0].sunrise : "--:--";
+  const char* set = w.dailyCount ? w.daily[0].sunset : "--:--";
+  lv_label_set_text(value_[0], rise);
+  lv_label_set_text(value_[1], set);
+  lv_label_set_text(value_[2], w.valid ? (w.isDay ? "DAYLIGHT" : "NIGHT") : "--");
+  lv_label_set_text(value_[3], finite(w.uv) ? String(w.uv, 1).c_str() : "--");
+  lv_label_set_text(value_[4], fmt::moonPhase().c_str());
+  lv_label_set_text(value_[5], fmt::localDate().c_str());
+}
+
+void Ui::refreshHistory_(const AppSnapshot& s) {
+  lv_label_set_text(value_[0], s.system.sdAvailable ? "READY + LOGGING" : "NOT MOUNTED");
+  lv_obj_set_style_text_color(value_[0], s.system.sdAvailable ? green_() : red_(), 0);
+  const double usedMb = s.system.sdUsed / 1048576.0;
+  const double totalMb = s.system.sdTotal / 1048576.0;
+  lv_label_set_text(value_[1], s.system.sdAvailable ? (String(usedMb, 1) + " MB").c_str() : "--");
+  lv_label_set_text(value_[2], s.system.sdAvailable ? (String(totalMb, 1) + " MB").c_str() : "--");
+  lv_label_set_text(value_[3], String(s.system.historySamples).c_str());
+}
+
+void Ui::refreshSystem_(const AppSnapshot& s) {
+  lv_label_set_text(value_[0], (String("WiFi  ") + (s.system.wifiConnected ? "CONNECTED  " : "OFFLINE  ") + s.system.ip).c_str());
+  lv_label_set_text(value_[1], (String("RSSI  ") + (s.system.wifiConnected ? String(s.system.rssi) + " dBm" : "--")).c_str());
+  lv_label_set_text(value_[2], (String("Heap  ") + String(s.system.freeHeap / 1024) + " KB").c_str());
+  lv_label_set_text(value_[3], (String("PSRAM  ") + String(s.system.freePsram / 1024) + " KB").c_str());
+  lv_label_set_text(value_[4], (String("Flash  ") + String(s.system.flashBytes / 1048576) + " MB").c_str());
+  String bat = "Battery  ";
+  bat += finite(s.system.batteryVoltage) ? String(s.system.batteryVoltage, 2) + " V  " + String(s.system.batteryPercent) + "%" : "not detected";
+  lv_label_set_text(value_[5], bat.c_str());
+  lv_label_set_text(value_[6], (String("TF  ") + (s.system.sdAvailable ? "READY" : "OFFLINE") + "    IMU  " + (s.system.imuAvailable ? "READY" : "OFFLINE")).c_str());
+  lv_label_set_text(value_[7], (String("Data  weather ") + (s.weather.valid ? (s.weather.fromCache ? "CACHE" : "LIVE") : "NONE") + "  air " + (s.air.valid ? (s.air.fromCache ? "CACHE" : "LIVE") : "NONE")).c_str());
+}
+
+void Ui::refresh_(const AppSnapshot& s, bool dataChanged) {
+  refreshHeader_(s);
+  if (page_ == Page::Alerts && dataChanged) {
+    lv_obj_clean(content_);
+    clearPageRefs_();
+    buildAlerts_(s);
+  } else {
+    switch (page_) {
+      case Page::Home: refreshHome_(s); break;
+      case Page::Hourly: refreshHourly_(s); break;
+      case Page::Forecast: refreshForecast_(s); break;
+      case Page::Rain: refreshRain_(s); break;
+      case Page::Wind: refreshWind_(s); break;
+      case Page::Atmosphere: refreshAtmosphere_(s); break;
+      case Page::Air: refreshAir_(s); break;
+      case Page::Sun: refreshSun_(s); break;
+      case Page::History: refreshHistory_(s); break;
+      case Page::System: refreshSystem_(s); break;
+      default: break;
+    }
+  }
+}
+
+void Ui::service() {
+  const AppSnapshot s = store_.snapshot();
+  const bool dataChanged = s.revision != seenRevision_;
+  const bool headerDue = millis() - lastHeaderMs_ >= 1000;
+  const bool newDark = resolveDark_(s);
+
+  if (newDark != dark_) {
+    dark_ = newDark;
+    buildShell_();
+    buildPage_();
+    refresh_(s, true);
+    seenRevision_ = s.revision;
+    lastHeaderMs_ = millis();
+  } else if (dataChanged || headerDue) {
+    refresh_(s, dataChanged);
+    if (dataChanged) seenRevision_ = s.revision;
+    if (headerDue) lastHeaderMs_ = millis();
+  }
+
+  if (settings_.carousel && millis() - lastCarouselMs_ >= static_cast<uint32_t>(settings_.carouselSeconds) * 1000UL) nextPage();
+}
+
+}  // namespace ws
+
+// ====================== src/SerialConsole.cpp ======================
+namespace ws {
+
+void SerialConsole::begin() {
+  Serial.println("[console] type 'help' for commands");
+}
+
+void SerialConsole::service() {
+  while (Serial.available()) {
+    const char c = static_cast<char>(Serial.read());
+    if (c == '\r') continue;
+    if (c == '\n') {
+      line_.trim();
+      if (line_.length()) execute_(line_);
+      line_ = "";
+    } else if (line_.length() < 120) {
+      line_ += c;
+    }
+  }
+}
+
+void SerialConsole::help_() const {
+  Serial.println("Commands:");
+  Serial.println("  status | refresh | reconnect");
+  Serial.println("  page 1..11 | home");
+  Serial.println("  temp c|f");
+  Serial.println("  wind kmh|mph|ms");
+  Serial.println("  pressure hpa|inhg");
+  Serial.println("  theme auto|dark|light");
+  Serial.println("  brightness auto|5..100");
+  Serial.println("  carousel on|off | interval 8..120");
+  Serial.println("  orientation on|off");
+  Serial.println("  defaults");
+}
+
+void SerialConsole::status_() const {
+  const AppSnapshot s = data_.snapshot();
+  Serial.printf("Firmware: Weather Station V2\n");
+  Serial.printf("WiFi: %s  IP=%s  RSSI=%d\n", s.system.wifiConnected ? "connected" : "offline", s.system.ip, s.system.rssi);
+  Serial.printf("Weather: %s%s  T=%.1fC  P=%.1fhPa  wind=%.1fkm/h\n",
+                s.weather.valid ? "valid" : "none", s.weather.fromCache ? " (cache)" : "", s.weather.temperature, s.weather.pressure, s.weather.wind);
+  Serial.printf("Air: %s%s  EU AQI=%.1f  PM2.5=%.1f\n",
+                s.air.valid ? "valid" : "none", s.air.fromCache ? " (cache)" : "", s.air.europeanAqi, s.air.pm25);
+  Serial.printf("Battery: %.3fV %d%% via GPIO%d | SD=%s | IMU=%s\n",
+                s.system.batteryVoltage, s.system.batteryPercent, s.system.batteryAdcPin,
+                s.system.sdAvailable ? "ready" : "offline", s.system.imuAvailable ? "ready" : "offline");
+  Serial.printf("Heap=%uKB PSRAM=%uKB Page=%u/%u Carousel=%s\n",
+                s.system.freeHeap / 1024, s.system.freePsram / 1024,
+                static_cast<unsigned>(ui_.page()) + 1, static_cast<unsigned>(Page::Count), settings_.carousel ? "on" : "off");
+}
+
+void SerialConsole::saveAndRefresh_(bool rebuild) {
+  settingsStore_.save(settings_);
+  ui_.settingsChanged(rebuild);
+}
+
+void SerialConsole::execute_(String c) {
+  c.trim();
+  c.toLowerCase();
+  if (c == "help" || c == "?") {
+    help_();
+    return;
+  }
+  if (c == "status") {
+    status_();
+    return;
+  }
+  if (c == "refresh") {
+    weather_.requestRefresh();
+    Serial.println("Refresh requested");
+    return;
+  }
+  if (c == "reconnect") {
+    network_.forceReconnect();
+    return;
+  }
+  if (c == "home") {
+    ui_.home();
+    settings_.lastPage = Page::Home;
+    saveAndRefresh_(false);
+    return;
+  }
+  if (c == "defaults") {
+    settingsStore_.reset();
+    settings_ = Settings{};
+    ui_.setPage(settings_.lastPage);
+    saveAndRefresh_(true);
+    Serial.println("Defaults restored");
+    return;
+  }
+
+  if (c.startsWith("page ")) {
+    const int n = c.substring(5).toInt();
+    if (n >= 1 && n <= static_cast<int>(Page::Count)) {
+      ui_.setPage(static_cast<Page>(n - 1));
+      settings_.lastPage = ui_.page();
+      settingsStore_.save(settings_);
+    } else Serial.println("page must be 1..11");
+    return;
+  }
+  if (c == "temp c") {
+    settings_.temperatureUnit = TemperatureUnit::Celsius;
+    saveAndRefresh_(false);
+    return;
+  }
+  if (c == "temp f") {
+    settings_.temperatureUnit = TemperatureUnit::Fahrenheit;
+    saveAndRefresh_(false);
+    return;
+  }
+  if (c == "wind kmh") {
+    settings_.windUnit = WindUnit::Kmh;
+    saveAndRefresh_(false);
+    return;
+  }
+  if (c == "wind mph") {
+    settings_.windUnit = WindUnit::Mph;
+    saveAndRefresh_(false);
+    return;
+  }
+  if (c == "wind ms") {
+    settings_.windUnit = WindUnit::Ms;
+    saveAndRefresh_(false);
+    return;
+  }
+  if (c == "pressure hpa") {
+    settings_.pressureUnit = PressureUnit::Hpa;
+    saveAndRefresh_(false);
+    return;
+  }
+  if (c == "pressure inhg") {
+    settings_.pressureUnit = PressureUnit::InHg;
+    saveAndRefresh_(false);
+    return;
+  }
+  if (c == "theme auto") {
+    settings_.theme = ThemeMode::Auto;
+    saveAndRefresh_(true);
+    return;
+  }
+  if (c == "theme dark") {
+    settings_.theme = ThemeMode::Dark;
+    saveAndRefresh_(true);
+    return;
+  }
+  if (c == "theme light") {
+    settings_.theme = ThemeMode::Light;
+    saveAndRefresh_(true);
+    return;
+  }
+  if (c == "brightness auto") {
+    settings_.autoBrightness = true;
+    saveAndRefresh_(false);
+    return;
+  }
+  if (c.startsWith("brightness ")) {
+    const int n = c.substring(11).toInt();
+    if (n >= 5 && n <= 100) {
+      settings_.autoBrightness = false;
+      settings_.brightnessPct = n;
+      saveAndRefresh_(false);
+    } else Serial.println("brightness must be auto or 5..100");
+    return;
+  }
+  if (c == "carousel on") {
+    settings_.carousel = true;
+    saveAndRefresh_(false);
+    return;
+  }
+  if (c == "carousel off") {
+    settings_.carousel = false;
+    saveAndRefresh_(false);
+    return;
+  }
+  if (c.startsWith("interval ")) {
+    const int n = c.substring(9).toInt();
+    if (n >= 8 && n <= 120) {
+      settings_.carouselSeconds = n;
+      saveAndRefresh_(false);
+    } else Serial.println("interval must be 8..120 seconds");
+    return;
+  }
+  if (c == "orientation on") {
+    settings_.autoOrientation = true;
+    saveAndRefresh_(false);
+    return;
+  }
+  if (c == "orientation off") {
+    settings_.autoOrientation = false;
+    saveAndRefresh_(false);
+    return;
+  }
+
+  Serial.println("Unknown command. Type 'help'.");
+}
+
+}  // namespace ws
+
+// ====================== src/main.cpp ======================
+using namespace ws;
+
+namespace {
+DataStore dataStore;
+SettingsStore settingsStore;
+Settings settings{};
+NetworkService network;
+StorageService storage;
+PowerService power;
+ButtonService button;
+DisplayService display;
+WeatherService weather(dataStore);
+Ui ui(dataStore, display, settings);
+SerialConsole console(settings, settingsStore, dataStore, network, weather, ui);
+
+uint32_t lastSystemSampleMs = 0;
+uint32_t settingsSaveDueMs = 0;
+bool settingsDirty = false;
+
+void markSettingsDirty() {
+  settingsDirty = true;
+  settingsSaveDueMs = millis() + 4000;
+}
+
+void sampleSystem() {
+ static AppSnapshot current;
+  static SystemSnapshot sys;
+
+  current = dataStore.snapshot();
+  sys = current.system;
+  sys.wifiConnected = WiFi.status() == WL_CONNECTED;
+  sys.rssi = sys.wifiConnected ? WiFi.RSSI() : 0;
+  const String ip = sys.wifiConnected ? WiFi.localIP().toString() : String("0.0.0.0");
+  strlcpy(sys.ip, ip.c_str(), sizeof(sys.ip));
+  sys.sdAvailable = storage.available();
+  sys.sdUsed = storage.usedBytes();
+  sys.sdTotal = storage.totalBytes();
+  sys.imuAvailable = false;
+  sys.batteryVoltage = power.voltage();
+  sys.batteryPercent = power.percent();
+  sys.batteryAdcPin = power.adcPin();
+  sys.freeHeap = ESP.getFreeHeap();
+  sys.freePsram = ESP.getFreePsram();
+  sys.flashBytes = ESP.getFlashChipSize();
+  sys.historySamples = storage.historySamples();
+  dataStore.setSystem(sys);
+}
+
+void handleButtonEvent(ButtonService::Event event) {
+  switch (event) {
+    case ButtonService::Event::Click:
+      ui.nextPage();
+      settings.lastPage = ui.page();
+      markSettingsDirty();
+      break;
+    case ButtonService::Event::DoubleClick:
+      settings.carousel = !settings.carousel;
+      ui.settingsChanged(false);
+      markSettingsDirty();
+      Serial.printf("[input] carousel %s\n", settings.carousel ? "on" : "off");
+      break;
+    case ButtonService::Event::LongPress:
+      ui.home();
+      settings.lastPage = Page::Home;
+      markSettingsDirty();
+      break;
+    default:
+      break;
+  }
+}
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(150);
+  Serial.println();
+  Serial.println("================================================");
+  Serial.printf("  %s %s\n", config::kFirmwareName, config::kFirmwareVersion);
+  Serial.println("  Waveshare ESP32-S3-LCD-2");
+  Serial.println("================================================");
+
+  settings = settingsStore.load();
+  button.begin();
+  power.begin();
+  storage.begin();
+
+  if (!display.begin()) {
+    Serial.println("FATAL: display initialization failed");
+    while (true) delay(1000);
+  }
+
+  static WeatherSnapshot cachedWeather{};
+  static AirSnapshot cachedAir{};
+  if (storage.loadCache(cachedWeather, cachedAir)) {
+    if (cachedWeather.valid) dataStore.setWeather(cachedWeather);
+    if (cachedAir.valid) dataStore.setAir(cachedAir);
+  }
+
+  network.begin();
+  if (!weather.begin()) Serial.println("[weather] weather task creation failed");
+
+  sampleSystem();
+  ui.begin();
+  console.begin();
+
+  Serial.println("[boot] ready; UI never waits for network");
+}
+
+void loop() {
+  network.service();
+  handleButtonEvent(button.service());
+
+  static AppSnapshot snapshot;
+  snapshot = dataStore.snapshot();
+  power.service(settings, snapshot);
+  storage.service(snapshot);
+
+  if (millis() - lastSystemSampleMs >= config::kSystemSampleMs) {
+    sampleSystem();
+    lastSystemSampleMs = millis();
+  }
+
+  if (settingsDirty && static_cast<int32_t>(millis() - settingsSaveDueMs) >= 0) {
+    settingsStore.save(settings);
+    settingsDirty = false;
+  }
+
+  console.service();
+  ui.service();
+  display.service();
+  delay(4);
+}

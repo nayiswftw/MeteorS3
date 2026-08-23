@@ -1,0 +1,1230 @@
+/*
+  WEATHER STATION V2.1 — CLEAN BUILD
+  Waveshare ESP32-S3-LCD-2 | Arduino IDE | LVGL 9
+
+  Design goals:
+    - one readable sketch
+    - known-working V1 display pins
+    - no classes / FreeRTOS / giant snapshot copies
+    - five useful screens instead of eleven data dumps
+    - cached current conditions for offline boot
+    - Open-Meteo weather + air quality
+    - BOOT: short press = next page, long press = home
+
+  Libraries:
+    ArduinoJson 7.x
+    Arduino_GFX_Library
+    LVGL 9.x
+*/
+
+#include <Arduino.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <Preferences.h>
+#include <time.h>
+#include <math.h>
+#include <Arduino_GFX_Library.h>
+#include <lvgl.h>
+
+// ============================================================
+// 1. YOUR SETTINGS
+// ============================================================
+
+const char *WIFI_SSID     = "Xiaomi 11i HyperCharge";
+const char *WIFI_PASSWORD = "12345678";
+
+const double LATITUDE  = 30.000000;
+const double LONGITUDE = 75.000000;
+
+const char *LOCATION_NAME = "HOME";
+const char *TIMEZONE      = "Asia/Kolkata";
+
+// ============================================================
+// 2. HARDWARE — KEPT FROM THE WORKING V1
+// ============================================================
+
+constexpr int LCD_WIDTH  = 240;
+constexpr int LCD_HEIGHT = 320;
+
+constexpr int LCD_SCLK = 39;
+constexpr int LCD_MOSI = 38;
+constexpr int LCD_MISO = 40;
+constexpr int LCD_DC   = 42;
+constexpr int LCD_CS   = 45;
+constexpr int LCD_RST  = -1;
+
+constexpr int LCD_BACKLIGHT = 1;
+constexpr int USER_BUTTON   = 0;
+constexpr int BATTERY_ADC   = 4;
+
+// ============================================================
+// 3. TIMING
+// ============================================================
+
+constexpr uint32_t WEATHER_REFRESH_MS = 10UL * 60UL * 1000UL;
+constexpr uint32_t AIR_REFRESH_MS     = 30UL * 60UL * 1000UL;
+constexpr uint32_t WIFI_RETRY_MS      = 20UL * 1000UL;
+constexpr uint32_t UI_REFRESH_MS      = 1000UL;
+
+// ============================================================
+// 4. DATA
+// ============================================================
+
+struct HourData {
+  char time[6] = "--:--";
+  float temperature = NAN;
+  int rainChance = 0;
+  int weatherCode = -1;
+};
+
+struct DayData {
+  char date[11] = "";
+  float low = NAN;
+  float high = NAN;
+  int rainChance = 0;
+  int weatherCode = -1;
+};
+
+struct WeatherData {
+  bool valid = false;
+
+  float temperature = NAN;
+  float feelsLike = NAN;
+  float humidity = NAN;
+  float dewPoint = NAN;
+  float pressure = NAN;
+  float wind = NAN;
+  float gust = NAN;
+  float windDirection = NAN;
+  float visibility = NAN;
+  float uv = NAN;
+  float rain = NAN;
+
+  int weatherCode = -1;
+  bool isDay = true;
+
+  char sunrise[6] = "--:--";
+  char sunset[6]  = "--:--";
+
+  HourData hourly[24];
+  int hourlyCount = 0;
+
+  DayData daily[7];
+  int dailyCount = 0;
+
+  time_t fetchedAt = 0;
+};
+
+struct AirData {
+  bool valid = false;
+  float pm25 = NAN;
+  float pm10 = NAN;
+  float ozone = NAN;
+  float no2 = NAN;
+  int usAqi = -1;
+  time_t fetchedAt = 0;
+};
+
+WeatherData weather;
+AirData air;
+
+// ============================================================
+// 5. GLOBAL STATE
+// ============================================================
+
+enum Page {
+  PAGE_NOW,
+  PAGE_NEXT,
+  PAGE_WEEK,
+  PAGE_AIR,
+  PAGE_SYSTEM,
+  PAGE_COUNT
+};
+
+Page currentPage = PAGE_NOW;
+
+bool wifiConnected = false;
+uint32_t lastWifiAttempt = 0;
+uint32_t lastWeatherUpdate = 0;
+uint32_t lastAirUpdate = 0;
+uint32_t lastUiRefresh = 0;
+
+Preferences prefs;
+
+// ============================================================
+// 6. DISPLAY
+// ============================================================
+
+Arduino_DataBus *lcdBus = new Arduino_ESP32SPI(
+  LCD_DC, LCD_CS, LCD_SCLK, LCD_MOSI, LCD_MISO
+);
+
+Arduino_GFX *gfx = new Arduino_ST7789(
+  lcdBus, LCD_RST, 0, true, LCD_WIDTH, LCD_HEIGHT
+);
+
+lv_display_t *display = nullptr;
+uint8_t *lvBuffer1 = nullptr;
+uint8_t *lvBuffer2 = nullptr;
+
+constexpr int LV_BUFFER_LINES = 40;
+
+lv_obj_t *root = nullptr;
+
+// Palette: restrained, high contrast.
+#define COL_BG      lv_color_hex(0x071018)
+#define COL_PANEL   lv_color_hex(0x0D1A24)
+#define COL_PANEL2  lv_color_hex(0x122532)
+#define COL_TEXT    lv_color_hex(0xF2F7FA)
+#define COL_MUTED   lv_color_hex(0x8195A3)
+#define COL_CYAN    lv_color_hex(0x55D6E8)
+#define COL_BLUE    lv_color_hex(0x6BA8FF)
+#define COL_GREEN   lv_color_hex(0x72D49B)
+#define COL_YELLOW  lv_color_hex(0xF3CC72)
+#define COL_RED     lv_color_hex(0xFF7777)
+
+// ============================================================
+// 7. SMALL HELPERS
+// ============================================================
+
+String tempText(float value, int decimals = 0) {
+  if (isnan(value)) return "--";
+  return String(value, (unsigned int)decimals) + " C";
+}
+
+String numberText(float value, int decimals = 0) {
+  if (isnan(value)) return "--";
+  return String(value, (unsigned int)decimals);
+}
+
+String localClock() {
+  struct tm now;
+  if (!getLocalTime(&now, 20)) return "--:--";
+
+  char text[6];
+  strftime(text, sizeof(text), "%H:%M", &now);
+  return String(text);
+}
+
+String localDate() {
+  struct tm now;
+  if (!getLocalTime(&now, 20)) return "--- -- ---";
+
+  char text[18];
+  strftime(text, sizeof(text), "%a %d %b", &now);
+  return String(text);
+}
+
+String windDirection(float degrees) {
+  if (isnan(degrees)) return "--";
+
+  static const char *directions[] = {
+    "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+    "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"
+  };
+
+  int index = (int)((degrees + 11.25f) / 22.5f) % 16;
+  return directions[index];
+}
+
+String weatherName(int code) {
+  if (code == 0) return "Clear";
+  if (code == 1) return "Mostly clear";
+  if (code == 2) return "Partly cloudy";
+  if (code == 3) return "Overcast";
+  if (code == 45 || code == 48) return "Fog";
+  if (code >= 51 && code <= 57) return "Drizzle";
+  if (code >= 61 && code <= 67) return "Rain";
+  if (code >= 71 && code <= 77) return "Snow";
+  if (code >= 80 && code <= 82) return "Showers";
+  if (code >= 85 && code <= 86) return "Snow showers";
+  if (code >= 95) return "Thunderstorm";
+  return "Unknown";
+}
+
+String weatherGlyph(int code, bool day = true) {
+  // ASCII on purpose: works with stock LVGL font config.
+  if (code == 0) return day ? "SUN" : "MOON";
+  if (code <= 3) return "CLOUD";
+  if (code == 45 || code == 48) return "FOG";
+  if (code >= 51 && code <= 67) return "RAIN";
+  if (code >= 71 && code <= 77) return "SNOW";
+  if (code >= 80 && code <= 82) return "RAIN";
+  if (code >= 95) return "STORM";
+  return "WX";
+}
+
+String aqiLabel(int aqi) {
+  if (aqi < 0) return "--";
+  if (aqi <= 50) return "GOOD";
+  if (aqi <= 100) return "MODERATE";
+  if (aqi <= 150) return "UNHEALTHY*";
+  if (aqi <= 200) return "UNHEALTHY";
+  if (aqi <= 300) return "VERY BAD";
+  return "HAZARDOUS";
+}
+
+lv_color_t aqiColor(int aqi) {
+  if (aqi < 0) return COL_MUTED;
+  if (aqi <= 50) return COL_GREEN;
+  if (aqi <= 100) return COL_YELLOW;
+  return COL_RED;
+}
+
+String dataAge(time_t timestamp) {
+  if (timestamp <= 0) return "NO DATA";
+
+  time_t now = time(nullptr);
+  if (now < timestamp) return "CACHED";
+
+  long minutes = (long)((now - timestamp) / 60);
+
+  if (minutes < 1) return "LIVE";
+  if (minutes < 60) return String(minutes) + "m OLD";
+  return String(minutes / 60) + "h OLD";
+}
+
+// ============================================================
+// 8. LVGL HELPERS
+// ============================================================
+
+void setObjectBox(lv_obj_t *obj, lv_color_t bg, int radius = 12) {
+  lv_obj_set_style_bg_color(obj, bg, 0);
+  lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(obj, 0, 0);
+  lv_obj_set_style_radius(obj, radius, 0);
+  lv_obj_set_style_pad_all(obj, 0, 0);
+  lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+}
+
+lv_obj_t *makePanel(int x, int y, int w, int h, lv_color_t color = COL_PANEL) {
+  lv_obj_t *panel = lv_obj_create(root);
+  lv_obj_set_pos(panel, x, y);
+  lv_obj_set_size(panel, w, h);
+  setObjectBox(panel, color);
+  return panel;
+}
+
+lv_obj_t *makeLabel(
+  lv_obj_t *parent,
+  const String &text,
+  int x,
+  int y,
+  int w,
+  int h,
+  lv_color_t color = COL_TEXT,
+  lv_text_align_t align = LV_TEXT_ALIGN_LEFT
+) {
+  lv_obj_t *label = lv_label_create(parent);
+  lv_label_set_text(label, text.c_str());
+  lv_obj_set_pos(label, x, y);
+  lv_obj_set_size(label, w, h);
+  lv_obj_set_style_text_color(label, color, 0);
+  lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_align(label, align, 0);
+  lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
+  return label;
+}
+
+void makeRule(int x, int y, int w, lv_color_t color = COL_PANEL2) {
+  lv_obj_t *line = lv_obj_create(root);
+  lv_obj_set_pos(line, x, y);
+  lv_obj_set_size(line, w, 1);
+  lv_obj_set_style_bg_color(line, color, 0);
+  lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(line, 0, 0);
+}
+
+void drawHeader(const String &title) {
+  makeLabel(root, LOCATION_NAME, 10, 7, 105, 20, COL_CYAN);
+  makeLabel(root, localClock(), 126, 7, 55, 20, COL_TEXT, LV_TEXT_ALIGN_RIGHT);
+
+  String status = wifiConnected ? "WIFI" : "OFF";
+  makeLabel(root, status, 185, 7, 45, 20,
+            wifiConnected ? COL_GREEN : COL_RED,
+            LV_TEXT_ALIGN_RIGHT);
+
+  makeRule(10, 31, 220);
+  makeLabel(root, title, 10, 36, 160, 20, COL_MUTED);
+}
+
+void drawFooter() {
+  String dots;
+  for (int i = 0; i < PAGE_COUNT; i++) {
+    dots += (i == currentPage) ? "O" : ".";
+    if (i < PAGE_COUNT - 1) dots += "  ";
+  }
+
+  makeLabel(root, dots, 10, 296, 220, 18, COL_MUTED, LV_TEXT_ALIGN_CENTER);
+}
+
+void clearUi() {
+  lv_obj_clean(root);
+}
+
+// ============================================================
+// 9. PAGE: NOW
+// ============================================================
+
+void drawNowPage() {
+  clearUi();
+  drawHeader("NOW");
+
+  if (!weather.valid) {
+    makeLabel(root, "Waiting for weather...", 10, 110, 220, 24,
+              COL_MUTED, LV_TEXT_ALIGN_CENTER);
+    drawFooter();
+    return;
+  }
+
+  // Main temperature area: intentionally open, not boxed.
+  makeLabel(root, weatherGlyph(weather.weatherCode, weather.isDay),
+            10, 63, 65, 20, COL_YELLOW);
+
+  makeLabel(root, tempText(weather.temperature, 0),
+            72, 54, 158, 28, COL_TEXT, LV_TEXT_ALIGN_RIGHT);
+
+  makeLabel(root, weatherName(weather.weatherCode),
+            10, 88, 220, 20, COL_TEXT);
+
+  String feels = "Feels " + tempText(weather.feelsLike, 0);
+  makeLabel(root, feels, 10, 109, 130, 18, COL_MUTED);
+
+  makeLabel(root, dataAge(weather.fetchedAt),
+            145, 109, 85, 18,
+            wifiConnected ? COL_GREEN : COL_YELLOW,
+            LV_TEXT_ALIGN_RIGHT);
+
+  makeRule(10, 135, 220);
+
+  // Four compact metrics.
+  makeLabel(root, "HUMIDITY", 10, 149, 95, 18, COL_MUTED);
+  makeLabel(root, numberText(weather.humidity, 0) + "%",
+            10, 170, 95, 22, COL_CYAN);
+
+  makeLabel(root, "WIND", 125, 149, 105, 18, COL_MUTED);
+  makeLabel(root,
+            windDirection(weather.windDirection) + " " +
+            numberText(weather.wind, 0) + " km/h",
+            125, 170, 105, 22, COL_GREEN);
+
+  makeLabel(root, "RAIN", 10, 203, 95, 18, COL_MUTED);
+  int rainChance = weather.hourlyCount > 0 ? weather.hourly[0].rainChance : 0;
+  makeLabel(root, String(rainChance) + "%",
+            10, 224, 95, 22,
+            rainChance >= 50 ? COL_BLUE : COL_TEXT);
+
+  makeLabel(root, "UV", 125, 203, 105, 18, COL_MUTED);
+  makeLabel(root, numberText(weather.uv, 1),
+            125, 224, 105, 22,
+            weather.uv >= 6 ? COL_YELLOW : COL_TEXT);
+
+  // Bottom insight strip.
+  lv_obj_t *insight = makePanel(10, 255, 220, 31, COL_PANEL2);
+
+  String message;
+  if (rainChance >= 60) {
+    message = "Umbrella likely useful";
+  } else if (weather.uv >= 6) {
+    message = "High UV outdoors";
+  } else if (weather.wind >= 35) {
+    message = "Windy conditions";
+  } else {
+    message = "No major weather signal";
+  }
+
+  makeLabel(insight, message, 8, 7, 204, 18, COL_TEXT);
+  drawFooter();
+}
+
+// ============================================================
+// 10. PAGE: NEXT 24 HOURS
+// ============================================================
+
+void drawNextPage() {
+  clearUi();
+  drawHeader("NEXT 24 HOURS");
+
+  if (!weather.valid || weather.hourlyCount == 0) {
+    makeLabel(root, "No hourly forecast", 10, 120, 220, 20,
+              COL_MUTED, LV_TEXT_ALIGN_CENTER);
+    drawFooter();
+    return;
+  }
+
+  // Summary first.
+  int maxRain = 0;
+  float minTemp = 999;
+  float maxTemp = -999;
+
+  for (int i = 0; i < weather.hourlyCount; i++) {
+    maxRain = max(maxRain, weather.hourly[i].rainChance);
+    minTemp = min(minTemp, weather.hourly[i].temperature);
+    maxTemp = max(maxTemp, weather.hourly[i].temperature);
+  }
+
+  makeLabel(root, "TEMP RANGE", 10, 62, 95, 18, COL_MUTED);
+  makeLabel(root,
+            tempText(minTemp, 0) + " - " + tempText(maxTemp, 0),
+            10, 82, 125, 20, COL_TEXT);
+
+  makeLabel(root, "MAX RAIN", 145, 62, 85, 18, COL_MUTED);
+  makeLabel(root, String(maxRain) + "%",
+            145, 82, 85, 20,
+            maxRain >= 50 ? COL_BLUE : COL_TEXT,
+            LV_TEXT_ALIGN_RIGHT);
+
+  makeRule(10, 111, 220);
+
+  // Six 4-hour checkpoints. Much easier to read on 240px than 24 rows.
+  int y = 123;
+
+  for (int row = 0; row < 6; row++) {
+    int i = row * 4;
+    if (i >= weather.hourlyCount) break;
+
+    HourData &h = weather.hourly[i];
+
+    makeLabel(root, h.time, 10, y, 44, 20, COL_MUTED);
+    makeLabel(root, tempText(h.temperature, 0), 57, y, 58, 20, COL_TEXT);
+    makeLabel(root, weatherGlyph(h.weatherCode), 119, y, 55, 20, COL_CYAN);
+    makeLabel(root, String(h.rainChance) + "%", 178, y, 52, 20,
+              h.rainChance >= 50 ? COL_BLUE : COL_MUTED,
+              LV_TEXT_ALIGN_RIGHT);
+
+    y += 27;
+  }
+
+  drawFooter();
+}
+
+// ============================================================
+// 11. PAGE: 7 DAY
+// ============================================================
+
+void drawWeekPage() {
+  clearUi();
+  drawHeader("7 DAY");
+
+  if (!weather.valid || weather.dailyCount == 0) {
+    makeLabel(root, "No daily forecast", 10, 120, 220, 20,
+              COL_MUTED, LV_TEXT_ALIGN_CENTER);
+    drawFooter();
+    return;
+  }
+
+  int y = 62;
+
+  for (int i = 0; i < weather.dailyCount; i++) {
+    DayData &d = weather.daily[i];
+
+    String day = (i == 0) ? "TODAY" : String(d.date + 5);
+    makeLabel(root, day, 10, y, 54, 20,
+              i == 0 ? COL_CYAN : COL_MUTED);
+
+    makeLabel(root, weatherGlyph(d.weatherCode),
+              67, y, 50, 20, COL_TEXT);
+
+    makeLabel(root,
+              tempText(d.low, 0) + " / " + tempText(d.high, 0),
+              119, y, 76, 20, COL_TEXT);
+
+    makeLabel(root, String(d.rainChance) + "%",
+              197, y, 33, 20,
+              d.rainChance >= 50 ? COL_BLUE : COL_MUTED,
+              LV_TEXT_ALIGN_RIGHT);
+
+    y += 31;
+    if (i < weather.dailyCount - 1) makeRule(10, y - 5, 220);
+  }
+
+  drawFooter();
+}
+
+// ============================================================
+// 12. PAGE: AIR
+// ============================================================
+
+void drawAirPage() {
+  clearUi();
+  drawHeader("AIR QUALITY");
+
+  if (!air.valid) {
+    makeLabel(root, "Waiting for air quality...", 10, 120, 220, 20,
+              COL_MUTED, LV_TEXT_ALIGN_CENTER);
+    drawFooter();
+    return;
+  }
+
+  lv_color_t qualityColor = aqiColor(air.usAqi);
+
+  makeLabel(root, "US AQI", 10, 62, 90, 18, COL_MUTED);
+  makeLabel(root, String(air.usAqi), 10, 84, 90, 28, qualityColor);
+  makeLabel(root, aqiLabel(air.usAqi), 105, 87, 125, 22,
+            qualityColor, LV_TEXT_ALIGN_RIGHT);
+
+  makeRule(10, 121, 220);
+
+  makeLabel(root, "PM2.5", 10, 140, 85, 18, COL_MUTED);
+  makeLabel(root, numberText(air.pm25, 1) + " ug/m3",
+            10, 162, 100, 20, COL_TEXT);
+
+  makeLabel(root, "PM10", 125, 140, 85, 18, COL_MUTED);
+  makeLabel(root, numberText(air.pm10, 1) + " ug/m3",
+            125, 162, 105, 20, COL_TEXT);
+
+  makeLabel(root, "OZONE", 10, 201, 85, 18, COL_MUTED);
+  makeLabel(root, numberText(air.ozone, 0),
+            10, 223, 100, 20, COL_TEXT);
+
+  makeLabel(root, "NO2", 125, 201, 85, 18, COL_MUTED);
+  makeLabel(root, numberText(air.no2, 0),
+            125, 223, 105, 20, COL_TEXT);
+
+  lv_obj_t *age = makePanel(10, 259, 220, 27, COL_PANEL2);
+  makeLabel(age, dataAge(air.fetchedAt), 8, 5, 204, 18,
+            wifiConnected ? COL_GREEN : COL_YELLOW,
+            LV_TEXT_ALIGN_CENTER);
+
+  drawFooter();
+}
+
+// ============================================================
+// 13. PAGE: SYSTEM
+// ============================================================
+
+float batteryVoltage() {
+  int raw = analogRead(BATTERY_ADC);
+  if (raw <= 0) return NAN;
+
+  // Keep calibration deliberately simple and editable.
+  return (raw / 4095.0f) * 3.3f * 2.0f;
+}
+
+void drawSystemPage() {
+  clearUi();
+  drawHeader("SYSTEM");
+
+  int y = 65;
+
+  auto row = [&](const String &name, const String &value, lv_color_t color = COL_TEXT) {
+    makeLabel(root, name, 10, y, 90, 20, COL_MUTED);
+    makeLabel(root, value, 105, y, 125, 20, color, LV_TEXT_ALIGN_RIGHT);
+    y += 31;
+  };
+
+  row("WIFI", wifiConnected ? "CONNECTED" : "OFFLINE",
+      wifiConnected ? COL_GREEN : COL_RED);
+
+  row("RSSI", wifiConnected ? String(WiFi.RSSI()) + " dBm" : "--");
+
+  row("IP", wifiConnected ? WiFi.localIP().toString() : "--");
+
+  row("HEAP", String(ESP.getFreeHeap() / 1024) + " KB");
+
+  if (psramFound()) {
+    row("PSRAM", String(ESP.getFreePsram() / 1024) + " KB");
+  } else {
+    row("PSRAM", "NOT FOUND", COL_YELLOW);
+  }
+
+  float volts = batteryVoltage();
+  row("BATTERY", isnan(volts) ? "--" : String(volts, 2) + " V");
+
+  row("WEATHER", weather.valid ? dataAge(weather.fetchedAt) : "NONE",
+      weather.valid ? COL_GREEN : COL_RED);
+
+  drawFooter();
+}
+
+// ============================================================
+// 14. PAGE ROUTER
+// ============================================================
+
+void drawPage() {
+  switch (currentPage) {
+    case PAGE_NOW:    drawNowPage();    break;
+    case PAGE_NEXT:   drawNextPage();   break;
+    case PAGE_WEEK:   drawWeekPage();   break;
+    case PAGE_AIR:    drawAirPage();    break;
+    case PAGE_SYSTEM: drawSystemPage(); break;
+    default:          drawNowPage();    break;
+  }
+}
+
+// ============================================================
+// 15. DISPLAY INITIALIZATION
+// ============================================================
+
+void lvglFlush(lv_display_t *disp, const lv_area_t *area, uint8_t *pxMap) {
+  uint32_t width  = area->x2 - area->x1 + 1;
+  uint32_t height = area->y2 - area->y1 + 1;
+
+  gfx->draw16bitRGBBitmap(
+    area->x1,
+    area->y1,
+    (uint16_t *)pxMap,
+    width,
+    height
+  );
+
+  lv_display_flush_ready(disp);
+}
+
+uint32_t lvglTick() {
+  return millis();
+}
+
+void initializeDisplay() {
+  pinMode(LCD_BACKLIGHT, OUTPUT);
+  digitalWrite(LCD_BACKLIGHT, HIGH);
+
+  if (!gfx->begin()) {
+    Serial.println("[display] Arduino_GFX begin failed");
+  }
+
+  gfx->fillScreen(RGB565_BLACK);
+
+  lv_init();
+  lv_tick_set_cb(lvglTick);
+
+  display = lv_display_create(LCD_WIDTH, LCD_HEIGHT);
+
+  size_t bufferSize =
+    LCD_WIDTH * LV_BUFFER_LINES * sizeof(lv_color_t);
+
+  lvBuffer1 = (uint8_t *)heap_caps_malloc(
+    bufferSize,
+    MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL
+  );
+
+  lvBuffer2 = (uint8_t *)heap_caps_malloc(
+    bufferSize,
+    MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL
+  );
+
+  if (!lvBuffer1 || !lvBuffer2) {
+    Serial.println("[display] LVGL buffer allocation failed");
+    while (true) delay(1000);
+  }
+
+  lv_display_set_buffers(
+    display,
+    lvBuffer1,
+    lvBuffer2,
+    bufferSize,
+    LV_DISPLAY_RENDER_MODE_PARTIAL
+  );
+
+  lv_display_set_flush_cb(display, lvglFlush);
+
+  root = lv_screen_active();
+  lv_obj_set_style_bg_color(root, COL_BG, 0);
+  lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
+  lv_obj_set_style_text_font(root, &lv_font_montserrat_14, 0);
+  lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+
+  Serial.println("[display] ready");
+}
+
+// ============================================================
+// 16. WIFI + TIME
+// ============================================================
+
+void startWifi() {
+  if (strlen(WIFI_SSID) == 0 ||
+      strcmp(WIFI_SSID, "YOUR_WIFI_NAME") == 0) {
+    Serial.println("[wifi] credentials not configured");
+    return;
+  }
+
+  Serial.printf("[wifi] connecting to %s\n", WIFI_SSID);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  lastWifiAttempt = millis();
+}
+
+void maintainWifi() {
+  bool connectedNow = WiFi.status() == WL_CONNECTED;
+
+  if (connectedNow != wifiConnected) {
+    wifiConnected = connectedNow;
+
+    if (wifiConnected) {
+      Serial.print("[wifi] connected: ");
+      Serial.println(WiFi.localIP());
+      drawPage();
+    } else {
+      Serial.println("[wifi] disconnected");
+      drawPage();
+    }
+  }
+
+  if (!wifiConnected &&
+      millis() - lastWifiAttempt >= WIFI_RETRY_MS) {
+    Serial.println("[wifi] retry");
+    WiFi.disconnect();
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    lastWifiAttempt = millis();
+  }
+}
+
+void setupTime() {
+  configTzTime(
+    TIMEZONE,
+    "pool.ntp.org",
+    "time.google.com",
+    "time.cloudflare.com"
+  );
+}
+
+// ============================================================
+// 17. HTTP
+// ============================================================
+
+bool getJson(const String &url, JsonDocument &doc) {
+  if (!wifiConnected) return false;
+
+  HTTPClient http;
+  http.setConnectTimeout(8000);
+  http.setTimeout(12000);
+  http.useHTTP10(true);
+
+  if (!http.begin(url)) return false;
+
+  http.addHeader("User-Agent", "ESP32-WeatherStation-V2.1");
+
+  int code = http.GET();
+
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("[http] error %d\n", code);
+    http.end();
+    return false;
+  }
+
+  // Parse directly from the HTTP stream. Avoids a second giant String copy.
+  DeserializationError error =
+    deserializeJson(doc, http.getStream());
+
+  http.end();
+
+  if (error) {
+    Serial.print("[json] ");
+    Serial.println(error.c_str());
+    return false;
+  }
+
+  return true;
+}
+
+// ============================================================
+// 18. WEATHER
+// ============================================================
+
+String weatherUrl() {
+  String url = "https://api.open-meteo.com/v1/forecast";
+
+  url += "?latitude=" + String(LATITUDE, 6);
+  url += "&longitude=" + String(LONGITUDE, 6);
+
+  url += "&current="
+         "temperature_2m,"
+         "relative_humidity_2m,"
+         "apparent_temperature,"
+         "dew_point_2m,"
+         "pressure_msl,"
+         "wind_speed_10m,"
+         "wind_direction_10m,"
+         "wind_gusts_10m,"
+         "rain,"
+         "weather_code,"
+         "visibility,"
+         "uv_index,"
+         "is_day";
+
+  url += "&hourly="
+         "temperature_2m,"
+         "precipitation_probability,"
+         "weather_code";
+
+  url += "&daily="
+         "weather_code,"
+         "temperature_2m_max,"
+         "temperature_2m_min,"
+         "precipitation_probability_max,"
+         "sunrise,"
+         "sunset";
+
+  // We only display 24 hours, but 2 forecast days guarantees enough
+  // samples even late in the local day.
+  url += "&forecast_days=7";
+  url += "&timezone=auto";
+
+  return url;
+}
+
+int findCurrentHour(JsonArray times, const String &currentTime) {
+  if (times.size() == 0) return 0;
+
+  // Current API time is YYYY-MM-DDTHH:MM.
+  String hourKey = currentTime.substring(0, 13);
+
+  for (int i = 0; i < (int)times.size(); i++) {
+    String t = times[i].as<String>();
+    if (t.startsWith(hourKey)) return i;
+  }
+
+  return 0;
+}
+
+bool updateWeather() {
+  Serial.println("[weather] updating");
+
+  JsonDocument doc;
+
+  if (!getJson(weatherUrl(), doc)) {
+    Serial.println("[weather] failed");
+    return false;
+  }
+
+  JsonObject current = doc["current"];
+
+  String currentTime = current["time"] | "";
+
+  weather.temperature   = current["temperature_2m"] | NAN;
+  weather.feelsLike     = current["apparent_temperature"] | NAN;
+  weather.humidity      = current["relative_humidity_2m"] | NAN;
+  weather.dewPoint      = current["dew_point_2m"] | NAN;
+  weather.pressure      = current["pressure_msl"] | NAN;
+  weather.wind          = current["wind_speed_10m"] | NAN;
+  weather.windDirection = current["wind_direction_10m"] | NAN;
+  weather.gust          = current["wind_gusts_10m"] | NAN;
+  weather.rain          = current["rain"] | NAN;
+  weather.weatherCode   = current["weather_code"] | -1;
+  weather.visibility    = current["visibility"] | NAN;
+  weather.uv            = current["uv_index"] | NAN;
+  weather.isDay         = (current["is_day"] | 1) == 1;
+
+  JsonObject hourly = doc["hourly"];
+  JsonArray hourTimes = hourly["time"];
+
+  int start = findCurrentHour(hourTimes, currentTime);
+
+  weather.hourlyCount = 0;
+
+  for (int source = start;
+       source < (int)hourTimes.size() && weather.hourlyCount < 24;
+       source++) {
+
+    int target = weather.hourlyCount++;
+    String timestamp = hourTimes[source].as<String>();
+
+    if (timestamp.length() >= 16) {
+      snprintf(
+        weather.hourly[target].time,
+        sizeof(weather.hourly[target].time),
+        "%s",
+        timestamp.substring(11, 16).c_str()
+      );
+    }
+
+    weather.hourly[target].temperature =
+      hourly["temperature_2m"][source] | NAN;
+
+    weather.hourly[target].rainChance =
+      hourly["precipitation_probability"][source] | 0;
+
+    weather.hourly[target].weatherCode =
+      hourly["weather_code"][source] | -1;
+  }
+
+  JsonObject daily = doc["daily"];
+  JsonArray dates = daily["time"];
+
+  weather.dailyCount = min((int)dates.size(), 7);
+
+  for (int i = 0; i < weather.dailyCount; i++) {
+    String date = dates[i].as<String>();
+
+    snprintf(
+      weather.daily[i].date,
+      sizeof(weather.daily[i].date),
+      "%s",
+      date.c_str()
+    );
+
+    weather.daily[i].low =
+      daily["temperature_2m_min"][i] | NAN;
+
+    weather.daily[i].high =
+      daily["temperature_2m_max"][i] | NAN;
+
+    weather.daily[i].rainChance =
+      daily["precipitation_probability_max"][i] | 0;
+
+    weather.daily[i].weatherCode =
+      daily["weather_code"][i] | -1;
+  }
+
+  if (weather.dailyCount > 0) {
+    String rise = daily["sunrise"][0] | "";
+    String set  = daily["sunset"][0] | "";
+
+    if (rise.length() >= 16) {
+      snprintf(weather.sunrise, sizeof(weather.sunrise),
+               "%s", rise.substring(11, 16).c_str());
+    }
+
+    if (set.length() >= 16) {
+      snprintf(weather.sunset, sizeof(weather.sunset),
+               "%s", set.substring(11, 16).c_str());
+    }
+  }
+
+  weather.valid = true;
+  weather.fetchedAt = time(nullptr);
+
+  lastWeatherUpdate = millis();
+
+  Serial.printf(
+    "[weather] %.1f C, %s, %d hourly, %d daily\n",
+    weather.temperature,
+    weatherName(weather.weatherCode).c_str(),
+    weather.hourlyCount,
+    weather.dailyCount
+  );
+
+  return true;
+}
+
+// ============================================================
+// 19. AIR QUALITY
+// ============================================================
+
+String airUrl() {
+  String url =
+    "https://air-quality-api.open-meteo.com/v1/air-quality";
+
+  url += "?latitude=" + String(LATITUDE, 6);
+  url += "&longitude=" + String(LONGITUDE, 6);
+
+  // Current values means we no longer accidentally read hourly[0].
+  url += "&current="
+         "pm2_5,"
+         "pm10,"
+         "ozone,"
+         "nitrogen_dioxide,"
+         "us_aqi";
+
+  url += "&timezone=auto";
+
+  return url;
+}
+
+bool updateAir() {
+  Serial.println("[air] updating");
+
+  JsonDocument doc;
+
+  if (!getJson(airUrl(), doc)) {
+    Serial.println("[air] failed");
+    return false;
+  }
+
+  JsonObject current = doc["current"];
+
+  air.pm25  = current["pm2_5"] | NAN;
+  air.pm10  = current["pm10"] | NAN;
+  air.ozone = current["ozone"] | NAN;
+  air.no2   = current["nitrogen_dioxide"] | NAN;
+  air.usAqi = current["us_aqi"] | -1;
+
+  air.valid = air.usAqi >= 0 || !isnan(air.pm25);
+  air.fetchedAt = time(nullptr);
+
+  lastAirUpdate = millis();
+
+  Serial.printf("[air] AQI %d, PM2.5 %.1f\n", air.usAqi, air.pm25);
+
+  return air.valid;
+}
+
+// ============================================================
+// 20. SIMPLE OFFLINE CACHE
+// ============================================================
+
+void saveCache() {
+  if (!weather.valid) return;
+
+  prefs.begin("weather-v21", false);
+
+  prefs.putBool("valid", true);
+  prefs.putFloat("temp", weather.temperature);
+  prefs.putFloat("feel", weather.feelsLike);
+  prefs.putFloat("hum", weather.humidity);
+  prefs.putFloat("press", weather.pressure);
+  prefs.putFloat("wind", weather.wind);
+  prefs.putFloat("wdir", weather.windDirection);
+  prefs.putFloat("uv", weather.uv);
+  prefs.putInt("code", weather.weatherCode);
+  prefs.putBool("day", weather.isDay);
+  prefs.putLong64("time", (int64_t)weather.fetchedAt);
+
+  prefs.end();
+}
+
+void loadCache() {
+  prefs.begin("weather-v21", true);
+
+  if (!prefs.getBool("valid", false)) {
+    prefs.end();
+    return;
+  }
+
+  weather.temperature   = prefs.getFloat("temp", NAN);
+  weather.feelsLike     = prefs.getFloat("feel", NAN);
+  weather.humidity      = prefs.getFloat("hum", NAN);
+  weather.pressure      = prefs.getFloat("press", NAN);
+  weather.wind          = prefs.getFloat("wind", NAN);
+  weather.windDirection = prefs.getFloat("wdir", NAN);
+  weather.uv            = prefs.getFloat("uv", NAN);
+  weather.weatherCode   = prefs.getInt("code", -1);
+  weather.isDay         = prefs.getBool("day", true);
+  weather.fetchedAt     = (time_t)prefs.getLong64("time", 0);
+  weather.valid         = true;
+
+  prefs.end();
+
+  Serial.println("[cache] restored current conditions");
+}
+
+// ============================================================
+// 21. BUTTON
+// ============================================================
+
+bool lastButtonState = HIGH;
+uint32_t buttonDownAt = 0;
+bool longPressHandled = false;
+
+void handleButton() {
+  bool state = digitalRead(USER_BUTTON);
+
+  if (lastButtonState == HIGH && state == LOW) {
+    buttonDownAt = millis();
+    longPressHandled = false;
+  }
+
+  if (state == LOW &&
+      !longPressHandled &&
+      millis() - buttonDownAt >= 900) {
+
+    longPressHandled = true;
+    currentPage = PAGE_NOW;
+    drawPage();
+  }
+
+  if (lastButtonState == LOW && state == HIGH) {
+    uint32_t held = millis() - buttonDownAt;
+
+    if (!longPressHandled && held >= 30) {
+      currentPage =
+        (Page)(((int)currentPage + 1) % PAGE_COUNT);
+
+      drawPage();
+    }
+  }
+
+  lastButtonState = state;
+}
+
+// ============================================================
+// 22. SCHEDULED WORK
+// ============================================================
+
+void updateDataIfNeeded() {
+  if (!wifiConnected) return;
+
+  if (!weather.valid ||
+      millis() - lastWeatherUpdate >= WEATHER_REFRESH_MS) {
+
+    if (updateWeather()) {
+      saveCache();
+      drawPage();
+    }
+  }
+
+  if (!air.valid ||
+      millis() - lastAirUpdate >= AIR_REFRESH_MS) {
+
+    if (updateAir()) {
+      drawPage();
+    }
+  }
+}
+
+void refreshUiIfNeeded() {
+  if (millis() - lastUiRefresh < UI_REFRESH_MS) return;
+
+  lastUiRefresh = millis();
+
+  static String previousMinute;
+  String minute = localClock();
+
+  // Only redraw when the displayed minute changes.
+  if (minute != previousMinute) {
+    previousMinute = minute;
+    drawPage();
+  }
+}
+
+// ============================================================
+// 23. SETUP
+// ============================================================
+
+void setup() {
+  Serial.begin(115200);
+  delay(300);
+
+  Serial.println();
+  Serial.println("================================");
+  Serial.println(" WEATHER STATION V2.1 CLEAN");
+  Serial.println(" Waveshare ESP32-S3-LCD-2");
+  Serial.println("================================");
+
+  pinMode(USER_BUTTON, INPUT_PULLUP);
+  pinMode(LCD_BACKLIGHT, OUTPUT);
+  digitalWrite(LCD_BACKLIGHT, HIGH);
+
+  analogReadResolution(12);
+
+  loadCache();
+  initializeDisplay();
+
+  // Show the UI immediately. Network never blocks first paint.
+  drawPage();
+  lv_timer_handler();
+
+  setupTime();
+  startWifi();
+
+  Serial.println("[boot] ready");
+}
+
+// ============================================================
+// 24. LOOP
+// ============================================================
+
+void loop() {
+  maintainWifi();
+  handleButton();
+
+  updateDataIfNeeded();
+  refreshUiIfNeeded();
+
+  lv_timer_handler();
+  delay(5);
+}
