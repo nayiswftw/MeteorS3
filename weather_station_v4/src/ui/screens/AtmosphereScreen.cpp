@@ -1,8 +1,8 @@
-#include "ui/Screen.h"
-#include "ui/Widgets.h"
-#include "ui/Theme.h"
-#include "core/State.h"
-#include "core/Format.h"
+#include "src/ui/Screen.h"
+#include "src/ui/Widgets.h"
+#include "src/ui/Theme.h"
+#include "src/core/State.h"
+#include "src/core/Format.h"
 #include <stdio.h>
 #include <math.h>
 

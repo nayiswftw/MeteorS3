@@ -4,24 +4,39 @@
  *  Waveshare ESP32-S3-LCD-2
  * ================================================================
  *
- *  PlatformIO firmware project.
+ *  Arduino IDE Firmware Project
  *  Clean layered architecture.
  *  Zero-allocation data paths & pure UI components.
+ *
+ *  Required Board Settings in Arduino IDE (Tools menu):
+ *  ----------------------------------------------------
+ *  - Board: "ESP32S3 Dev Module"
+ *  - Flash Size: "16MB (128Mb)"
+ *  - Partition Scheme: "16M Flash (3MB APP/9.9MB FATFS)" or "Default 16MB with spiffs"
+ *  - PSRAM: "OPI PSRAM"
+ *  - USB CDC On Boot: "Enabled"
+ *  - Upload Speed: "921600"
+ *
+ *  Required Libraries (install via Arduino IDE Library Manager):
+ *  -------------------------------------------------------------
+ *  - ArduinoJson (v7.x)
+ *  - GFX Library for Arduino (v1.6.x+)
+ *  - lvgl (v9.5.x+)
  */
 
 #include <Arduino.h>
 
-#include "Config.h"
-#include "core/State.h"
-#include "hal/Display.h"
-#include "hal/Input.h"
-#include "hal/Battery.h"
-#include "hal/Imu.h"
-#include "services/Network.h"
-#include "services/TimeSync.h"
-#include "services/Api.h"
-#include "services/Storage.h"
-#include "ui/Screen.h"
+#include "src/Config.h"
+#include "src/core/State.h"
+#include "src/hal/Display.h"
+#include "src/hal/Input.h"
+#include "src/hal/Battery.h"
+#include "src/hal/Imu.h"
+#include "src/services/Network.h"
+#include "src/services/TimeSync.h"
+#include "src/services/Api.h"
+#include "src/services/Storage.h"
+#include "src/ui/Screen.h"
 
 static uint32_t s_lastClockMinute = 0;
 static uint32_t s_lastPageChange  = 0;
@@ -32,7 +47,7 @@ void setup() {
 
     Serial.println();
     Serial.println("================================");
-    Serial.println(" WEATHER STATION V4 (PlatformIO)");
+    Serial.println(" WEATHER STATION V4 (Arduino IDE)");
     Serial.println(" Waveshare ESP32-S3-LCD-2");
     Serial.println("================================");
 

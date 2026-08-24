@@ -1,6 +1,6 @@
-#include "ui/Icons.h"
-#include "ui/Widgets.h"
-#include "ui/Theme.h"
+#include "src/ui/Icons.h"
+#include "src/ui/Widgets.h"
+#include "src/ui/Theme.h"
 #include <math.h>
 
 namespace ui {

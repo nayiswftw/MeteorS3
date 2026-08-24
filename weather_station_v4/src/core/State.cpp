@@ -1,5 +1,5 @@
-#include "core/State.h"
-#include "core/Weather.h"
+#include "src/core/State.h"
+#include "src/core/Weather.h"
 
 // ================================================================
 //  Private storage — only accessible through the API below

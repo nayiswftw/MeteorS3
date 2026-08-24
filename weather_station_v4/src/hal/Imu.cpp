@@ -1,5 +1,5 @@
-#include "hal/Imu.h"
-#include "Config.h"
+#include "src/hal/Imu.h"
+#include "src/Config.h"
 #include <Arduino.h>
 #include <Wire.h>
 

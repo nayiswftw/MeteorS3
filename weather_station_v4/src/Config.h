@@ -8,7 +8,7 @@
  */
 
 #include <Arduino.h>
-#include "core/Types.h"
+#include "src/core/Types.h"
 
 namespace config {
 

@@ -1,5 +1,5 @@
-#include "core/Format.h"
-#include "Config.h"
+#include "src/core/Format.h"
+#include "src/Config.h"
 #include <Arduino.h>
 #include <stdio.h>
 #include <math.h>

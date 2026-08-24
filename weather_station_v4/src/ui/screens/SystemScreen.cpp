@@ -1,9 +1,9 @@
-#include "ui/Screen.h"
-#include "ui/Widgets.h"
-#include "ui/Theme.h"
-#include "hal/Battery.h"
-#include "services/Network.h"
-#include "core/State.h"
+#include "src/ui/Screen.h"
+#include "src/ui/Widgets.h"
+#include "src/ui/Theme.h"
+#include "src/hal/Battery.h"
+#include "src/services/Network.h"
+#include "src/core/State.h"
 #include <Arduino.h>
 #include <stdio.h>
 

@@ -1,6 +1,6 @@
-#include "services/Network.h"
-#include "Config.h"
-#include "core/State.h"
+#include "src/services/Network.h"
+#include "src/Config.h"
+#include "src/core/State.h"
 #include <WiFi.h>
 
 namespace svc {

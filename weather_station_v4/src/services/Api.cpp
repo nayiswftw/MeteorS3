@@ -1,8 +1,8 @@
-#include "services/Api.h"
-#include "services/Network.h"
-#include "services/Storage.h"
-#include "core/State.h"
-#include "Config.h"
+#include "src/services/Api.h"
+#include "src/services/Network.h"
+#include "src/services/Storage.h"
+#include "src/core/State.h"
+#include "src/Config.h"
 
 #include <Arduino.h>
 #include <HTTPClient.h>

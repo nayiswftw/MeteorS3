@@ -1,5 +1,5 @@
-#include "services/TimeSync.h"
-#include "Config.h"
+#include "src/services/TimeSync.h"
+#include "src/Config.h"
 #include <Arduino.h>
 #include <time.h>
 

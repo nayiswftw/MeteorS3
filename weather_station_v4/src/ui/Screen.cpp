@@ -1,11 +1,11 @@
-#include "ui/Screen.h"
-#include "ui/Widgets.h"
-#include "ui/Theme.h"
-#include "hal/Display.h"
-#include "hal/Battery.h"
-#include "core/State.h"
-#include "core/Format.h"
-#include "Config.h"
+#include "src/ui/Screen.h"
+#include "src/ui/Widgets.h"
+#include "src/ui/Theme.h"
+#include "src/hal/Display.h"
+#include "src/hal/Battery.h"
+#include "src/core/State.h"
+#include "src/core/Format.h"
+#include "src/Config.h"
 
 namespace screen {
 

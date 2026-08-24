@@ -1,5 +1,5 @@
-#include "hal/Battery.h"
-#include "Config.h"
+#include "src/hal/Battery.h"
+#include "src/Config.h"
 #include <Arduino.h>
 
 namespace hal {

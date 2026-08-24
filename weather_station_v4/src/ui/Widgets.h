@@ -8,8 +8,8 @@
  */
 
 #include <lvgl.h>
-#include "core/Types.h"
-#include "ui/Theme.h"
+#include "src/core/Types.h"
+#include "src/ui/Theme.h"
 
 namespace ui {
 

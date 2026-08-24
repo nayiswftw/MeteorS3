@@ -1,5 +1,5 @@
-#include "hal/Input.h"
-#include "Config.h"
+#include "src/hal/Input.h"
+#include "src/Config.h"
 #include <Arduino.h>
 
 namespace hal {

@@ -1,5 +1,5 @@
-#include "hal/Display.h"
-#include "Config.h"
+#include "src/hal/Display.h"
+#include "src/Config.h"
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
 #include <esp_heap_caps.h>
