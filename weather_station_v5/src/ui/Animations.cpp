@@ -80,9 +80,18 @@ static void animTimerCb(lv_timer_t* timer) {
     }
 }
 
-void animInit() {
-    s_particleCount = 0;
+void animStop() {
     s_animMode = WeatherAnimMode::NONE;
+    s_particleCount = 0;
+    for (int i = 0; i < MAX_PARTICLES; i++) {
+        s_particles[i].obj = nullptr;
+    }
+    s_sunPulseObj  = nullptr;
+    s_lightningObj = nullptr;
+}
+
+void animInit() {
+    animStop();
     if (!s_animTimer) {
         s_animTimer = lv_timer_create(animTimerCb, 40, nullptr); // ~25 FPS
     }
@@ -93,12 +102,9 @@ void animService() {
 }
 
 void animAttachWeather(lv_obj_t* root, int weatherCode, bool isDay) {
-    s_particleCount = 0;
-    s_sunPulseObj   = nullptr;
-    s_lightningObj  = nullptr;
+    animStop();
 
-    if (weatherCode < 0) {
-        s_animMode = WeatherAnimMode::NONE;
+    if (weatherCode < 0 || !root) {
         return;
     }
 

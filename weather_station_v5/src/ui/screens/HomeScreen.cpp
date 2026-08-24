@@ -7,9 +7,11 @@
 #include <stdio.h>
 
 static void render(lv_obj_t* root) {
-    const WeatherData& w = state::weather();
-    const AirData&     a = state::air();
-    const InsightData& in = state::insights();
+    state::lock();
+    WeatherData w  = state::weather();
+    AirData     a  = state::air();
+    InsightData in = state::insights();
+    state::unlock();
 
     if (!w.valid) {
         ui::label(root, "--", 10, 83, 130, 45, &lv_font_montserrat_32, CLR_TEXT);

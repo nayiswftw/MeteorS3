@@ -5,8 +5,17 @@
 #include <stdio.h>
 
 static void render(lv_obj_t* root) {
-    const AlertItem* alerts = state::alerts();
-    int alertCount = state::alertCount();
+    AlertItem alerts[5];
+    int alertCount = 0;
+    int displayCount = 0;
+
+    state::lock();
+    alertCount = state::alertCount();
+    displayCount = min(5, alertCount);
+    for (int i = 0; i < displayCount; i++) {
+        alerts[i] = state::alerts()[i];
+    }
+    state::unlock();
 
     // Alert count number
     char countBuf[8];
@@ -20,7 +29,6 @@ static void render(lv_obj_t* root) {
 
     // List of up to 5 alerts
     int y = 110;
-    int displayCount = min(5, alertCount);
 
     for (int i = 0; i < displayCount; i++) {
         lv_obj_t* row = ui::panel(root, 10, y, layout::CARD_W_FULL, 35, CLR_PANEL, 15);

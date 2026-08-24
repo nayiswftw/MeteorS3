@@ -103,46 +103,59 @@ void loop() {
     svc::storageService();
 
     // 3. Handle Physical Button Actions
-    if (hal::buttonDoublePressed()) {
-        hal::backlightToggle();
-    } else if (hal::buttonLongPressed()) {
-        screen::home();
+    if (hal::buttonLongPressed()) {
+        if (!hal::backlightIsAwake()) {
+            hal::backlightWake();
+        } else {
+            screen::home();
+        }
         s_lastPageChange = millis();
     } else if (hal::buttonShortPressed()) {
-        screen::next();
+        if (!hal::backlightIsAwake()) {
+            hal::backlightWake();
+        } else {
+            screen::next();
+        }
         s_lastPageChange = millis();
     }
 
     // 4. Handle IMU 6-Axis Motion Gestures
     GestureType gesture = hal::imuReadGesture();
-    if (gesture == GestureType::TILT_RIGHT) {
-        screen::next();
-        s_lastPageChange = millis();
-    } else if (gesture == GestureType::TILT_LEFT) {
-        screen::prev();
-        s_lastPageChange = millis();
-    } else if (gesture == GestureType::SHAKE) {
-        screen::home();
+    if (gesture != GestureType::NONE) {
+        if (!hal::backlightIsAwake()) {
+            hal::backlightWake();
+        } else {
+            if (gesture == GestureType::TILT_RIGHT) {
+                screen::next();
+            } else if (gesture == GestureType::TILT_LEFT) {
+                screen::prev();
+            } else if (gesture == GestureType::SHAKE) {
+                screen::home();
+            }
+        }
         s_lastPageChange = millis();
     }
 
     // 5. Track state snapshot for change detection & repaint
     state::lock();
-    bool   isOnline      = state::isOnline();
-    time_t weatherTime   = state::weather().fetchedAt;
-    time_t airTime       = state::air().fetchedAt;
-    bool   autoPageEn    = state::config().enableAutoPage;
-    uint32_t autoPageSec = state::config().autoPageSec;
+    bool     isOnline      = state::isOnline();
+    time_t   weatherTime   = state::weather().fetchedAt;
+    time_t   airTime       = state::air().fetchedAt;
+    bool     autoPageEn    = state::config().enableAutoPage;
+    uint32_t autoPageSec   = state::config().autoPageSec;
+    uint32_t cfgRevision   = state::configRevision();
     state::unlock();
 
-    static bool   s_lastOnline      = false;
-    static time_t s_lastWeatherTime = 0;
-    static time_t s_lastAirTime     = 0;
+    static bool     s_lastOnline      = false;
+    static time_t   s_lastWeatherTime = 0;
+    static time_t   s_lastAirTime     = 0;
+    static uint32_t s_lastCfgRev      = 0;
 
-    if (isOnline != s_lastOnline || weatherTime != s_lastWeatherTime || airTime != s_lastAirTime) {
+    if (isOnline != s_lastOnline || weatherTime != s_lastWeatherTime || airTime != s_lastAirTime || cfgRevision != s_lastCfgRev) {
         s_lastOnline      = isOnline;
         s_lastWeatherTime = weatherTime;
         s_lastAirTime     = airTime;
+        s_lastCfgRev      = cfgRevision;
         screen::refresh();
     }
 
@@ -153,8 +166,8 @@ void loop() {
         screen::refresh();
     }
 
-    // 7. Auto page rotation (if enabled)
-    if (autoPageEn && (millis() - s_lastPageChange >= (autoPageSec * 1000UL))) {
+    // 7. Auto page rotation (if enabled and display awake)
+    if (autoPageEn && hal::backlightIsAwake() && (millis() - s_lastPageChange >= (autoPageSec * 1000UL))) {
         screen::next();
         s_lastPageChange = millis();
     }

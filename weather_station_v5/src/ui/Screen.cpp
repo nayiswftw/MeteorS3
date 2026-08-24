@@ -33,6 +33,7 @@ void show(ScreenId id) {
     lv_obj_t* root = hal::displayRoot();
     if (!root) return;
 
+    ui::animStop();
     lv_obj_clean(root);
 
     const ScreenDef& def = s_registry[s_current];

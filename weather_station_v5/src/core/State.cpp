@@ -22,6 +22,7 @@ static bool     s_apMode           = false;
 static uint32_t s_lastWeatherMs    = 0;
 static uint32_t s_lastAirMs        = 0;
 static uint32_t s_lastHistoryMs    = 0;
+static uint32_t s_configRevision   = 0;
 
 static SemaphoreHandle_t s_mutex   = nullptr;
 
@@ -82,6 +83,7 @@ bool     isApMode()            { return s_apMode; }
 uint32_t lastWeatherUpdate()   { return s_lastWeatherMs; }
 uint32_t lastAirUpdate()       { return s_lastAirMs; }
 uint32_t lastHistoryWrite()    { return s_lastHistoryMs; }
+uint32_t configRevision()      { return s_configRevision; }
 
 // ================================================================
 //  Write accessors
@@ -111,6 +113,7 @@ void setLastHistoryWrite(uint32_t ms) { lock(); s_lastHistoryMs = ms; unlock(); 
 void setConfig(const RuntimeConfig& cfg) {
     lock();
     s_config = cfg;
+    s_configRevision++;
     unlock();
 }
 

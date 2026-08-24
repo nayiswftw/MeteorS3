@@ -6,7 +6,9 @@
 #include <stdio.h>
 
 static void render(lv_obj_t* root) {
-    const WeatherData& w = state::weather();
+    state::lock();
+    WeatherData w = state::weather();
+    state::unlock();
     if (!w.valid || w.dailyCount == 0) return;
 
     int days = min(7, w.dailyCount);

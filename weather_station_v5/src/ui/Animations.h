@@ -15,6 +15,7 @@ enum class WeatherAnimMode : uint8_t {
 };
 
 void animInit();
+void animStop();
 void animService();
 
 /// Attach dynamic animated weather particles to the active root screen

@@ -226,6 +226,8 @@ void gauge(
     const char* caption,
     lv_color_t color
 ) {
+    if (maximum <= minimum) maximum = minimum + 1;
+
     lv_obj_t* arc = lv_arc_create(root);
     lv_obj_set_pos(arc, x, y);
     lv_obj_set_size(arc, diameter, diameter);
@@ -233,7 +235,10 @@ void gauge(
     lv_arc_set_value(arc, constrain(value, minimum, maximum));
     lv_arc_set_rotation(arc, 135);
     lv_arc_set_bg_angles(arc, 0, 270);
-    lv_obj_remove_style(arc, NULL, LV_PART_KNOB);
+
+    // Hide knob transparently in LVGL
+    lv_obj_set_style_opa(arc, LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(arc, 0, LV_PART_KNOB);
 
     lv_obj_set_style_arc_width(arc, 7, LV_PART_MAIN);
     lv_obj_set_style_arc_color(arc, CLR_PANEL_ALT, LV_PART_MAIN);
@@ -276,15 +281,17 @@ lv_obj_t* chart(
         maxVal += 0.5f;
     }
 
+    int32_t rangeMin = (int32_t)floor(minVal * 10);
+    int32_t rangeMax = (int32_t)ceil(maxVal * 10);
+    if (rangeMax <= rangeMin) rangeMax = rangeMin + 10;
+
     lv_obj_t* obj = lv_chart_create(root);
     lv_obj_set_pos(obj, x, y);
     lv_obj_set_size(obj, width, height);
     lv_chart_set_type(obj, LV_CHART_TYPE_LINE);
     lv_chart_set_point_count(obj, count);
-    lv_chart_set_axis_range(obj, LV_CHART_AXIS_PRIMARY_Y,
-                            (int32_t)floor(minVal * 10),
-                            (int32_t)ceil(maxVal * 10));
-    lv_chart_set_div_line_count(obj, 3, 0);
+    lv_chart_set_axis_range(obj, LV_CHART_AXIS_PRIMARY_Y, rangeMin, rangeMax);
+    lv_chart_set_div_line_count(obj, 3, 2);
 
     lv_obj_set_style_bg_opa(obj, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_border_width(obj, 0, LV_PART_MAIN);

@@ -6,7 +6,9 @@
 #include <stdio.h>
 
 static void render(lv_obj_t* root) {
-    const AirData& a = state::air();
+    state::lock();
+    AirData a = state::air();
+    state::unlock();
     if (!a.valid) return;
 
     lv_color_t aqiClr = ui::aqiColor(a.usAqi);

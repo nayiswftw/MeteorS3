@@ -819,11 +819,23 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
       new FormData(form).forEach((v, k) => { data[k] = v; });
 
       if (form.id === 'dispForm') {
-        data.gest = document.getElementById('cfgGest').checked;
-        data.apg = document.getElementById('cfgApg').checked;
+        data.gest  = document.getElementById('cfgGest').checked;
+        data.apg   = document.getElementById('cfgApg').checked;
+        data.bl    = parseInt(document.getElementById('cfgBl').value) || 220;
+        data.tout  = parseInt(document.getElementById('cfgTout').value) || 0;
+        data.gsens = parseInt(document.getElementById('cfgGsens').value) || 5;
+        data.apgs  = parseInt(document.getElementById('cfgApgs').value) || 30;
+      }
+      if (form.id === 'locForm') {
+        data.lat = parseFloat(document.getElementById('cfgLat').value) || 0.0;
+        data.lon = parseFloat(document.getElementById('cfgLon').value) || 0.0;
+        data.tu  = parseInt(document.getElementById('cfgTu').value) || 0;
+        data.wu  = parseInt(document.getElementById('cfgWu').value) || 0;
+        data.pu  = parseInt(document.getElementById('cfgPu').value) || 0;
       }
       if (form.id === 'mqttForm') {
-        data.mq_en = document.getElementById('cfgMqEn').checked;
+        data.mq_en   = document.getElementById('cfgMqEn').checked;
+        data.mq_port = parseInt(document.getElementById('cfgMqPort').value) || 1883;
       }
 
       try {
@@ -970,35 +982,44 @@ static void handleApiConfigPost() {
     RuntimeConfig c = state::config();
     state::unlock();
 
-    if (doc["ssid"].is<const char*>()) snprintf(c.wifiSsid, sizeof(c.wifiSsid), "%s", doc["ssid"].as<const char*>());
-    if (doc["pass"].is<const char*>()) snprintf(c.wifiPassword, sizeof(c.wifiPassword), "%s", doc["pass"].as<const char*>());
-    if (doc["loc"].is<const char*>())  snprintf(c.locationName, sizeof(c.locationName), "%s", doc["loc"].as<const char*>());
-    if (doc["lat"].is<double>())       c.latitude = doc["lat"].as<double>();
-    if (doc["lon"].is<double>())       c.longitude = doc["lon"].as<double>();
-    if (doc["tz"].is<const char*>())   snprintf(c.timezone, sizeof(c.timezone), "%s", doc["tz"].as<const char*>());
+    double oldLat = c.latitude;
+    double oldLon = c.longitude;
 
-    if (doc["tu"].is<int>())           c.tempUnit = (TempUnit)doc["tu"].as<int>();
-    if (doc["wu"].is<int>())           c.windUnit = (WindUnit)doc["wu"].as<int>();
-    if (doc["pu"].is<int>())           c.pressUnit = (PressUnit)doc["pu"].as<int>();
+    if (!doc["ssid"].isNull()) snprintf(c.wifiSsid, sizeof(c.wifiSsid), "%s", doc["ssid"].as<const char*>());
+    if (!doc["pass"].isNull()) snprintf(c.wifiPassword, sizeof(c.wifiPassword), "%s", doc["pass"].as<const char*>());
+    if (!doc["loc"].isNull())  snprintf(c.locationName, sizeof(c.locationName), "%s", doc["loc"].as<const char*>());
+    if (!doc["lat"].isNull())  c.latitude = doc["lat"].as<double>();
+    if (!doc["lon"].isNull())  c.longitude = doc["lon"].as<double>();
+    if (!doc["tz"].isNull())   snprintf(c.timezone, sizeof(c.timezone), "%s", doc["tz"].as<const char*>());
 
-    if (doc["bl"].is<int>()) {
-        c.backlightBrightness = doc["bl"].as<int>();
+    if (!doc["tu"].isNull())   c.tempUnit = (TempUnit)doc["tu"].as<int>();
+    if (!doc["wu"].isNull())   c.windUnit = (WindUnit)doc["wu"].as<int>();
+    if (!doc["pu"].isNull())   c.pressUnit = (PressUnit)doc["pu"].as<int>();
+
+    if (!doc["bl"].isNull()) {
+        c.backlightBrightness = (uint8_t)doc["bl"].as<int>();
         hal::backlightSetBrightness(c.backlightBrightness, true);
     }
-    if (doc["tout"].is<uint32_t>())    c.screenTimeoutSec = doc["tout"].as<uint32_t>();
-    if (doc["gest"].is<bool>())        c.enableGestures = doc["gest"].as<bool>();
-    if (doc["gsens"].is<int>())        c.gestureSensitivity = doc["gsens"].as<int>();
-    if (doc["apg"].is<bool>())         c.enableAutoPage = doc["apg"].as<bool>();
-    if (doc["apgs"].is<uint32_t>())    c.autoPageSec = doc["apgs"].as<uint32_t>();
+    if (!doc["tout"].isNull())  c.screenTimeoutSec = doc["tout"].as<uint32_t>();
+    if (!doc["gest"].isNull())  c.enableGestures = doc["gest"].as<bool>();
+    if (!doc["gsens"].isNull()) c.gestureSensitivity = (uint8_t)doc["gsens"].as<int>();
+    if (!doc["apg"].isNull())   c.enableAutoPage = doc["apg"].as<bool>();
+    if (!doc["apgs"].isNull())  c.autoPageSec = doc["apgs"].as<uint32_t>();
 
-    if (doc["mq_en"].is<bool>())       c.mqttEnabled = doc["mq_en"].as<bool>();
-    if (doc["mq_srv"].is<const char*>()) snprintf(c.mqttServer, sizeof(c.mqttServer), "%s", doc["mq_srv"].as<const char*>());
-    if (doc["mq_port"].is<uint16_t>()) c.mqttPort = doc["mq_port"].as<uint16_t>();
-    if (doc["mq_usr"].is<const char*>()) snprintf(c.mqttUser, sizeof(c.mqttUser), "%s", doc["mq_usr"].as<const char*>());
-    if (doc["mq_pwd"].is<const char*>()) snprintf(c.mqttPassword, sizeof(c.mqttPassword), "%s", doc["mq_pwd"].as<const char*>());
-    if (doc["mq_pfx"].is<const char*>()) snprintf(c.mqttTopicPrefix, sizeof(c.mqttTopicPrefix), "%s", doc["mq_pfx"].as<const char*>());
+    if (!doc["mq_en"].isNull())   c.mqttEnabled = doc["mq_en"].as<bool>();
+    if (!doc["mq_srv"].isNull())  snprintf(c.mqttServer, sizeof(c.mqttServer), "%s", doc["mq_srv"].as<const char*>());
+    if (!doc["mq_port"].isNull()) c.mqttPort = doc["mq_port"].as<uint16_t>();
+    if (!doc["mq_usr"].isNull())  snprintf(c.mqttUser, sizeof(c.mqttUser), "%s", doc["mq_usr"].as<const char*>());
+    if (!doc["mq_pwd"].isNull())  snprintf(c.mqttPassword, sizeof(c.mqttPassword), "%s", doc["mq_pwd"].as<const char*>());
+    if (!doc["mq_pfx"].isNull())  snprintf(c.mqttTopicPrefix, sizeof(c.mqttTopicPrefix), "%s", doc["mq_pfx"].as<const char*>());
 
     storageSaveConfig(c);
+
+    // If coordinates changed, trigger immediate weather refresh for new location
+    if (fabs(c.latitude - oldLat) > 0.0001 || fabs(c.longitude - oldLon) > 0.0001) {
+        apiForceRefresh();
+    }
+
     s_server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 

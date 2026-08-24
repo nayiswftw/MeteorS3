@@ -4,24 +4,30 @@
 #include "src/core/State.h"
 
 static void render(lv_obj_t* root) {
-    const auto& hist = state::history();
-
-    if (hist.size() < 2) {
-        ui::label(root, state::isSdReady() ? "Collecting history..." : "SD unavailable",
-                  10, 130, 220, 20, &lv_font_montserrat_14, CLR_MUTED, LV_TEXT_ALIGN_CENTER);
-        return;
-    }
-
     constexpr int COUNT = 24;
     float temps[COUNT];
     float press[COUNT];
-    int count = min(COUNT, hist.size());
-    int start = hist.size() - count;
+    int count = 0;
+    bool sdReady = false;
 
-    for (int i = 0; i < count; i++) {
-        const HistoryPoint& pt = hist.at(start + i);
-        temps[i] = pt.temperature;
-        press[i] = pt.pressure;
+    state::lock();
+    sdReady = state::isSdReady();
+    const auto& hist = state::history();
+    if (hist.size() >= 2) {
+        count = min(COUNT, hist.size());
+        int start = hist.size() - count;
+        for (int i = 0; i < count; i++) {
+            const HistoryPoint& pt = hist.at(start + i);
+            temps[i] = pt.temperature;
+            press[i] = pt.pressure;
+        }
+    }
+    state::unlock();
+
+    if (count < 2) {
+        ui::label(root, sdReady ? "Collecting history..." : "SD unavailable",
+                  10, 130, 220, 20, &lv_font_montserrat_14, CLR_MUTED, LV_TEXT_ALIGN_CENTER);
+        return;
     }
 
     ui::label(root, "Temperature", 10, 57, 100, 16, &lv_font_montserrat_14, CLR_MUTED);

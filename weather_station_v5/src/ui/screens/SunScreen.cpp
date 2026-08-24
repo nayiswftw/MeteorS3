@@ -7,7 +7,9 @@
 #include <time.h>
 
 static void render(lv_obj_t* root) {
-    const WeatherData& w = state::weather();
+    state::lock();
+    WeatherData w = state::weather();
+    state::unlock();
     if (!w.valid) return;
 
     // Sun Icon Graphic on left

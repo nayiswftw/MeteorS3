@@ -5,8 +5,10 @@
 #include <stdio.h>
 
 static void render(lv_obj_t* root) {
-    const WeatherData& w = state::weather();
-    const InsightData& in = state::insights();
+    state::lock();
+    WeatherData w  = state::weather();
+    InsightData in = state::insights();
+    state::unlock();
     if (!w.valid || w.hourlyCount == 0) return;
 
     int peakChance   = 0;
