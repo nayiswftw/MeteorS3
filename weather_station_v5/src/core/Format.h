@@ -13,8 +13,11 @@
 
 namespace fmt {
 
-/// "23 C" / "73 F"
+/// "23°C" / "73°F"
 void temperature(char* buf, size_t len, float celsius);
+
+/// "23°" / "73°" (compact without letter)
+void tempShort(char* buf, size_t len, float celsius);
 
 /// "18 km/h" / "11 mph" / "5.0 m/s"
 void wind(char* buf, size_t len, float kmh);

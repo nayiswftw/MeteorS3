@@ -35,10 +35,10 @@ static void render(lv_obj_t* root) {
     // Secondary info: Feels like, High, Low (12px clean)
     char secBuf[64];
     char appBuf[16], highBuf[16], lowBuf[16];
-    fmt::temperature(appBuf, sizeof(appBuf), w.apparent);
+    fmt::tempShort(appBuf, sizeof(appBuf), w.apparent);
     if (w.dailyCount > 0) {
-        fmt::temperature(highBuf, sizeof(highBuf), w.daily[0].high);
-        fmt::temperature(lowBuf, sizeof(lowBuf), w.daily[0].low);
+        fmt::tempShort(highBuf, sizeof(highBuf), w.daily[0].high);
+        fmt::tempShort(lowBuf, sizeof(lowBuf), w.daily[0].low);
         snprintf(secBuf, sizeof(secBuf), "Feels %s  •  H %s  L %s", appBuf, highBuf, lowBuf);
     } else {
         snprintf(secBuf, sizeof(secBuf), "Feels %s", appBuf);

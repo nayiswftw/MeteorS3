@@ -20,9 +20,28 @@ void temperature(char* buf, size_t len, float celsius) {
 
     if (tu == TempUnit::FAHRENHEIT) {
         float f = celsius * 9.0f / 5.0f + 32.0f;
-        snprintf(buf, len, "%.0f F", f);
+        snprintf(buf, len, "%.0f°F", f);
     } else {
-        snprintf(buf, len, "%.0f C", celsius);
+        snprintf(buf, len, "%.0f°C", celsius);
+    }
+}
+
+void tempShort(char* buf, size_t len, float celsius) {
+    if (!buf || len == 0) return;
+    if (isnan(celsius)) {
+        snprintf(buf, len, "--");
+        return;
+    }
+
+    state::lock();
+    TempUnit tu = state::config().tempUnit;
+    state::unlock();
+
+    if (tu == TempUnit::FAHRENHEIT) {
+        float f = celsius * 9.0f / 5.0f + 32.0f;
+        snprintf(buf, len, "%.0f°", f);
+    } else {
+        snprintf(buf, len, "%.0f°", celsius);
     }
 }
 
