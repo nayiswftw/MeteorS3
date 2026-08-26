@@ -1,4 +1,5 @@
 #include "src/services/Network.h"
+#include "src/services/TimeSync.h"
 #include "src/Config.h"
 #include "src/core/State.h"
 #include <WiFi.h>
@@ -87,6 +88,9 @@ void networkService() {
 
                 Serial.printf("[wifi] connected! IP: %s (RSSI: %d dBm)\n",
                               WiFi.localIP().toString().c_str(), WiFi.RSSI());
+
+                // Trigger NTP sync immediately upon connection
+                timeSyncInit();
             } else if (millis() - s_stateTimer >= 15000) { // 15s timeout
                 Serial.println("[wifi] connection timed out");
                 WiFi.disconnect();

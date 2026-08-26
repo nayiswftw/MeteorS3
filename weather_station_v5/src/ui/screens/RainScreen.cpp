@@ -9,7 +9,11 @@ static void render(lv_obj_t* root) {
     WeatherData w  = state::weather();
     InsightData in = state::insights();
     state::unlock();
-    if (!w.valid || w.hourlyCount == 0) return;
+
+    if (!w.valid || w.hourlyCount == 0) {
+        ui::metricCard(root, 10, 100, layout::CARD_W_FULL, 85, "PRECIPITATION", "Syncing...", "Fetching radar & rain outlook", CLR_BLUE);
+        return;
+    }
 
     int peakChance   = 0;
     float total12h   = 0.0f;
@@ -56,14 +60,14 @@ static void render(lv_obj_t* root) {
     ui::metricCard(root, 125, 57, layout::CARD_W_HALF, 71, "12H TOTAL", totValBuf, totCapBuf, CLR_CYAN);
 
     // Chart
-    ui::label(root, "Precipitation", 10, 143, 120, 16, &lv_font_montserrat_14, CLR_MUTED);
-    ui::chart(root, 10, 166, 220, 92, rainValues, count, CLR_BLUE);
+    ui::label(root, "Precipitation", 10, 143, 120, 15, &lv_font_montserrat_12, CLR_MUTED);
+    ui::chart(root, 10, 164, 220, 92, rainValues, count, CLR_BLUE);
 
     // Probability now
     char probBuf[32];
     int nowChance = w.hourly[0].rainChance;
     snprintf(probBuf, sizeof(probBuf), "Probability now %d%%", nowChance);
-    ui::label(root, probBuf, 10, 268, 220, 18, &lv_font_montserrat_14,
+    ui::label(root, probBuf, 10, 268, 220, 16, &lv_font_montserrat_12,
               (nowChance >= 60) ? CLR_BLUE : CLR_MUTED, LV_TEXT_ALIGN_CENTER);
 }
 

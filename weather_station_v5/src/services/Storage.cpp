@@ -4,7 +4,7 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
-#include <SD.h>
+#include <SD_MMC.h>
 #include <time.h>
 
 namespace svc {
@@ -144,10 +144,12 @@ void storageSaveCache() {
     s_prefs.end();
 }
 
+#include <SD_MMC.h>
+
 void storageLoadHistory() {
     if (!state::isSdReady()) return;
 
-    File file = SD.open("/weather.csv", FILE_READ);
+    File file = SD_MMC.open("/weather.csv", FILE_READ);
     if (!file) return;
 
     // Skip header line
@@ -199,7 +201,7 @@ void storageLogHistory() {
     const WeatherData& w = state::weather();
     if (!w.valid) return;
 
-    File file = SD.open("/weather.csv", FILE_APPEND);
+    File file = SD_MMC.open("/weather.csv", FILE_APPEND);
     if (!file) return;
 
     time_t now = time(nullptr);
@@ -230,24 +232,40 @@ void storageInit() {
     storageLoadCache();
 
     if (!config::ENABLE_SD) {
-        Serial.println("[sd] disabled in config");
         state::setSdReady(false);
         return;
     }
 
+    struct SdMmcPinPair { int clk; int cmd; int d0; };
+    const SdMmcPinPair pinPairs[] = {
+        { 14, 15, 2 },   // Standard Waveshare ESP32-S3-Touch-LCD-2 1-bit mode
+        { 14, 15, 16 },  // Alternate 1-bit mode
+        { 14, 15, 21 },
+        { 14, 15, 4 }
+    };
 
-    bool sdOk = SD.begin(config::SD_CS);
+    bool sdOk = false;
+    for (const auto& p : pinPairs) {
+        SD_MMC.end();
+        if (SD_MMC.setPins(p.clk, p.cmd, p.d0)) {
+            if (SD_MMC.begin("/sdcard", true)) { // true = 1-bit mode
+                sdOk = true;
+                Serial.printf("[sd] SD_MMC mounted on CLK=%d CMD=%d D0=%d (Card Size: %llu MB)\n",
+                              p.clk, p.cmd, p.d0, SD_MMC.cardSize() / (1024 * 1024));
+                break;
+            }
+        }
+    }
+
     state::setSdReady(sdOk);
 
     if (!sdOk) {
-        Serial.println("[sd] mount failed");
+        Serial.println("[sd] no SD card detected via SD_MMC (insert FAT32 TF card if needed)");
         return;
     }
 
-    Serial.println("[sd] mounted successfully");
-
-    if (!SD.exists("/weather.csv")) {
-        File file = SD.open("/weather.csv", FILE_WRITE);
+    if (!SD_MMC.exists("/weather.csv")) {
+        File file = SD_MMC.open("/weather.csv", FILE_WRITE);
         if (file) {
             file.println("time,temp,humidity,pressure,aqi");
             file.close();

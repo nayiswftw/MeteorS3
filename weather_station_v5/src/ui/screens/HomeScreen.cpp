@@ -22,33 +22,33 @@ static void render(lv_obj_t* root) {
     // Weather icon art
     ui::weatherArt(root, w.weatherCode, w.isDay, 158, 59, 1);
 
-    // Large Temperature
+    // Large Temperature (32px anti-aliased)
     char tempBuf[16];
     fmt::temperature(tempBuf, sizeof(tempBuf), w.temperature);
-    ui::label(root, tempBuf, 10, 72, 143, 45, &lv_font_montserrat_32, CLR_TEXT);
+    ui::label(root, tempBuf, 10, 70, 145, 45, &lv_font_montserrat_32, CLR_TEXT);
 
-    // Weather Name
+    // Weather Name (18px bold)
     char nameBuf[32];
     fmt::weatherName(nameBuf, sizeof(nameBuf), w.weatherCode);
-    ui::label(root, nameBuf, 12, 118, 140, 19, &lv_font_montserrat_14, CLR_TEXT);
+    ui::label(root, nameBuf, 12, 117, 145, 22, &lv_font_montserrat_18, CLR_TEXT);
 
-    // Secondary info: Feels like, High, Low
+    // Secondary info: Feels like, High, Low (12px clean)
     char secBuf[64];
     char appBuf[16], highBuf[16], lowBuf[16];
     fmt::temperature(appBuf, sizeof(appBuf), w.apparent);
     if (w.dailyCount > 0) {
         fmt::temperature(highBuf, sizeof(highBuf), w.daily[0].high);
         fmt::temperature(lowBuf, sizeof(lowBuf), w.daily[0].low);
-        snprintf(secBuf, sizeof(secBuf), "Feels %s  H %s  L %s", appBuf, highBuf, lowBuf);
+        snprintf(secBuf, sizeof(secBuf), "Feels %s  •  H %s  L %s", appBuf, highBuf, lowBuf);
     } else {
         snprintf(secBuf, sizeof(secBuf), "Feels %s", appBuf);
     }
-    ui::label(root, secBuf, 12, 139, 218, 17, &lv_font_montserrat_14, CLR_MUTED);
+    ui::label(root, secBuf, 12, 140, 218, 16, &lv_font_montserrat_12, CLR_MUTED);
 
-    // Insight card
+    // Insight card (14px & 12px)
     lv_obj_t* insightCard = ui::panel(root, 10, 164, 220, 49, CLR_PANEL_ALT, 18);
-    ui::label(insightCard, in.primary, 12, 8, 196, 17, &lv_font_montserrat_14, CLR_TEXT);
-    ui::label(insightCard, in.secondary, 12, 27, 196, 15, &lv_font_montserrat_14, CLR_DIM);
+    ui::label(insightCard, in.primary, 12, 7, 196, 18, &lv_font_montserrat_14, CLR_TEXT);
+    ui::label(insightCard, in.secondary, 12, 27, 196, 15, &lv_font_montserrat_12, CLR_DIM);
 
     // RAIN card
     int rainChance = (w.hourlyCount > 0) ? w.hourly[0].rainChance : 0;

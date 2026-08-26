@@ -10,7 +10,11 @@ static void render(lv_obj_t* root) {
     state::lock();
     WeatherData w = state::weather();
     state::unlock();
-    if (!w.valid) return;
+
+    if (!w.valid) {
+        ui::metricCard(root, 10, 100, layout::CARD_W_FULL, 85, "ATMOSPHERE", "Syncing...", "Fetching barometric & humidity data", CLR_ATMOS_TOP);
+        return;
+    }
 
     // Humidity Card
     char humValBuf[16], dewBuf[16], humCapBuf[32];

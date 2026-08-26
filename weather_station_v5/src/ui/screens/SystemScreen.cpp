@@ -58,20 +58,22 @@ static void render(lv_obj_t* root) {
     char statusValBuf[32];
     char statusCapBuf[64];
     if (apMode) {
-        snprintf(statusValBuf, sizeof(statusValBuf), "AP: 192.168.4.1");
+        snprintf(statusValBuf, sizeof(statusValBuf), "192.168.4.1");
         snprintf(statusCapBuf, sizeof(statusCapBuf), "Connect 'WeatherStation-Setup'");
     } else if (online) {
         snprintf(statusValBuf, sizeof(statusValBuf), "%s", telem.ipAddress);
-        snprintf(statusCapBuf, sizeof(statusCapBuf), "Web: http://%s  MQTT %s",
-                 telem.ipAddress, svc::isMqttConnected() ? "ON" : "OFF");
+        snprintf(statusCapBuf, sizeof(statusCapBuf), "SD %s  •  IMU %s  •  MQTT %s",
+                 state::isSdReady() ? "OK" : "--",
+                 hal::isImuAvailable() ? (gesturesEn ? "OK" : "Off") : "N/A",
+                 svc::isMqttConnected() ? "ON" : "OFF");
     } else {
         snprintf(statusValBuf, sizeof(statusValBuf), "DISCONNECTED");
-        snprintf(statusCapBuf, sizeof(statusCapBuf), "%.2f V  IMU %s  SD %s",
+        snprintf(statusCapBuf, sizeof(statusCapBuf), "%.2f V  •  IMU %s  •  SD %s",
                  batV, hal::isImuAvailable() ? (gesturesEn ? "Ready" : "Off") : "N/A",
                  state::isSdReady() ? "OK" : "--");
     }
 
-    ui::metricCard(root, 10, 226, layout::CARD_W_FULL, 64, "NETWORK & HUB",
+    ui::metricCard(root, 10, 226, layout::CARD_W_FULL, 64, "NETWORK & SYSTEM",
                    statusValBuf, statusCapBuf,
                    online ? CLR_GREEN : (apMode ? CLR_YELLOW : CLR_RED));
 }

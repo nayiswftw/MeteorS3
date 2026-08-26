@@ -10,7 +10,6 @@ static void render(lv_obj_t* root) {
     state::lock();
     WeatherData w = state::weather();
     state::unlock();
-    if (!w.valid) return;
 
     // Sun Icon Graphic on left
     ui::weatherArt(root, 0, true, 20, 52, 1);

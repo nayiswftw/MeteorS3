@@ -5,30 +5,37 @@
 #include "src/Config.h"
 
 #include <Arduino.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include <memory>
 
 namespace svc {
 
 static bool getJson(const String& url, JsonDocument& doc) {
     if (!isWifiConnected()) return false;
 
-    HTTPClient http;
-    http.setConnectTimeout(10000);
-    http.setTimeout(20000);
-    http.useHTTP10(true);
+    auto client = std::make_unique<WiFiClientSecure>();
+    client->setInsecure();
+    client->setTimeout(15);
 
-    if (!http.begin(url)) {
+    HTTPClient http;
+    http.setConnectTimeout(8000);
+    http.setTimeout(12000);
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+
+    if (!http.begin(*client, url)) {
         Serial.println("[http] begin failed");
         return false;
     }
 
-    http.addHeader("User-Agent", "ESP32-WeatherStation-V4");
+    http.addHeader("User-Agent", "ESP32-MeteorS3-WeatherStation");
+    http.addHeader("Accept", "application/json");
 
     int httpCode = http.GET();
     if (httpCode != HTTP_CODE_OK) {
-        Serial.printf("[http] error %d\n", httpCode);
+        Serial.printf("[http] GET %s error: %d\n", url.substring(0, 40).c_str(), httpCode);
         http.end();
         return false;
     }
@@ -36,11 +43,17 @@ static bool getJson(const String& url, JsonDocument& doc) {
     String payload = http.getString();
     http.end();
 
-    if (payload.length() == 0) return false;
+    if (payload.length() == 0) {
+        Serial.println("[http] empty response");
+        return false;
+    }
 
     DeserializationError err = deserializeJson(doc, payload);
     if (err) {
-        Serial.printf("[json] deserialize failed: %s\n", err.c_str());
+        Serial.printf("[json] deserialize error: %s (len: %d)\n", err.c_str(), payload.length());
+        if (payload.length() < 300) {
+            Serial.printf("[json] response text: %s\n", payload.c_str());
+        }
         return false;
     }
 
@@ -54,9 +67,8 @@ static String buildWeatherUrl() {
     state::unlock();
 
     String url = "https://api.open-meteo.com/v1/forecast";
-    url += "?latitude=" + String(lat, 6);
-    url += "&longitude=" + String(lon, 6);
-
+    url += "?latitude=" + String(lat, 4);
+    url += "&longitude=" + String(lon, 4);
 
     url += "&current="
            "temperature_2m,"
@@ -78,17 +90,11 @@ static String buildWeatherUrl() {
     url += "&hourly="
            "temperature_2m,"
            "apparent_temperature,"
-           "relative_humidity_2m,"
-           "dew_point_2m,"
            "pressure_msl,"
-           "cloud_cover,"
-           "visibility,"
            "uv_index,"
            "wind_speed_10m,"
-           "wind_direction_10m,"
            "wind_gusts_10m,"
            "precipitation,"
-           "rain,"
            "precipitation_probability,"
            "weather_code";
 
@@ -104,8 +110,8 @@ static String buildWeatherUrl() {
            "sunrise,"
            "sunset";
 
-    url += "&past_hours=12";
-    url += "&forecast_days=10";
+    url += "&past_hours=6";
+    url += "&forecast_days=7";
     url += "&timezone=auto";
 
     return url;
@@ -164,11 +170,10 @@ bool refreshWeather() {
     float pNow = hourly["pressure_msl"][nowIndex] | NAN;
     float p3   = pressureAt(3);
     float p6   = pressureAt(6);
-    float p12  = pressureAt(12);
 
     w.pressureDelta3h  = (!isnan(pNow) && !isnan(p3))  ? (pNow - p3)  : NAN;
     w.pressureDelta6h  = (!isnan(pNow) && !isnan(p6))  ? (pNow - p6)  : NAN;
-    w.pressureDelta12h = (!isnan(pNow) && !isnan(p12)) ? (pNow - p12) : NAN;
+    w.pressureDelta12h = NAN;
 
     // Parse Hourly (up to 48 hours forward)
     w.hourlyCount = 0;
@@ -181,22 +186,22 @@ bool refreshWeather() {
 
         h.temperature   = hourly["temperature_2m"][src]           | NAN;
         h.apparent      = hourly["apparent_temperature"][src]      | NAN;
-        h.humidity      = hourly["relative_humidity_2m"][src]      | NAN;
-        h.dewPoint      = hourly["dew_point_2m"][src]              | NAN;
+        h.humidity      = w.humidity;
+        h.dewPoint      = w.dewPoint;
         h.pressure      = hourly["pressure_msl"][src]              | NAN;
-        h.cloudCover    = hourly["cloud_cover"][src]               | NAN;
-        h.visibility    = hourly["visibility"][src]                | NAN;
+        h.cloudCover    = w.cloudCover;
+        h.visibility    = w.visibility;
         h.uv            = hourly["uv_index"][src]                  | NAN;
         h.wind          = hourly["wind_speed_10m"][src]            | NAN;
-        h.direction     = hourly["wind_direction_10m"][src]        | NAN;
+        h.direction     = w.direction;
         h.gust          = hourly["wind_gusts_10m"][src]            | NAN;
         h.precipitation = hourly["precipitation"][src]             | NAN;
-        h.rain          = hourly["rain"][src]                      | NAN;
+        h.rain          = hourly["precipitation"][src]             | NAN;
         h.rainChance    = hourly["precipitation_probability"][src] | 0;
         h.weatherCode   = hourly["weather_code"][src]              | -1;
     }
 
-    // Parse Daily (up to 10 days)
+    // Parse Daily (up to 7 days)
     JsonObject daily = doc["daily"];
     JsonArray dates = daily["time"];
     w.dailyCount = min(MAX_DAILY, (int)dates.size());
@@ -244,8 +249,8 @@ static String buildAirUrl() {
     state::unlock();
 
     String url = "https://air-quality-api.open-meteo.com/v1/air-quality";
-    url += "?latitude=" + String(lat, 6);
-    url += "&longitude=" + String(lon, 6);
+    url += "?latitude=" + String(lat, 4);
+    url += "&longitude=" + String(lon, 4);
     url += "&current=pm2_5,pm10,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone,european_aqi,us_aqi";
     url += "&timezone=auto";
     return url;
@@ -282,67 +287,52 @@ bool refreshAir() {
 }
 
 static volatile bool s_forceRefresh = false;
-static TaskHandle_t  s_apiTaskHandle = nullptr;
-
-static void apiWorkerTask(void* parameter) {
-    Serial.println("[api-task] background worker running on Core 0");
-
-    while (true) {
-        if (isWifiConnected()) {
-            bool needWeather = false;
-            bool needAir     = false;
-
-            if (s_forceRefresh) {
-                needWeather = true;
-                needAir     = true;
-                s_forceRefresh = false;
-            } else {
-                state::lock();
-                bool weatherValid = state::weather().valid;
-                uint32_t lastWeather = state::lastWeatherUpdate();
-                bool airValid = state::air().valid;
-                uint32_t lastAir = state::lastAirUpdate();
-                state::unlock();
-
-                uint32_t now = millis();
-                if (!weatherValid || (now - lastWeather >= config::WEATHER_INTERVAL_MS)) {
-                    needWeather = true;
-                }
-                if (!airValid || (now - lastAir >= config::AIR_INTERVAL_MS)) {
-                    needAir = true;
-                }
-            }
-
-            if (needWeather) {
-                refreshWeather();
-                vTaskDelay(pdMS_TO_TICKS(500));
-            }
-
-            if (needAir) {
-                refreshAir();
-            }
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(2000));
-    }
-}
+static bool          s_initialFetchDone = false;
 
 void apiInit() {
-    if (!s_apiTaskHandle) {
-        xTaskCreatePinnedToCore(
-            apiWorkerTask,
-            "ApiWorker",
-            8192,
-            nullptr,
-            1,
-            &s_apiTaskHandle,
-            0 // Core 0 (background core, core 1 runs UI loop)
-        );
-    }
+    s_initialFetchDone = false;
+    Serial.println("[api] initialized");
 }
 
 void apiService() {
-    // API work is managed in the background FreeRTOS task.
+    if (!isWifiConnected()) return;
+
+    uint32_t now = millis();
+    static uint32_t s_lastCheck = 0;
+    if (now - s_lastCheck < 2500 && !s_forceRefresh) return;
+    s_lastCheck = now;
+
+    bool needWeather = false;
+    bool needAir     = false;
+
+    if (!s_initialFetchDone || s_forceRefresh) {
+        needWeather = true;
+        needAir     = true;
+        s_initialFetchDone = true;
+        s_forceRefresh     = false;
+    } else {
+        state::lock();
+        bool weatherValid    = state::weather().valid;
+        int  hourlyCount     = state::weather().hourlyCount;
+        uint32_t lastWeather = state::lastWeatherUpdate();
+        bool airValid        = state::air().valid;
+        uint32_t lastAir     = state::lastAirUpdate();
+        state::unlock();
+
+        if (!weatherValid || hourlyCount == 0 || (now - lastWeather >= config::WEATHER_INTERVAL_MS)) {
+            needWeather = true;
+        }
+        if (!airValid || (now - lastAir >= config::AIR_INTERVAL_MS)) {
+            needAir = true;
+        }
+    }
+
+    if (needWeather) {
+        refreshWeather();
+    }
+    if (needAir) {
+        refreshAir();
+    }
 }
 
 void apiForceRefresh() {

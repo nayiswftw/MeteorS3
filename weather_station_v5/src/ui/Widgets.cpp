@@ -109,9 +109,6 @@ lv_obj_t* glassCard(
     lv_obj_set_style_border_color(obj, CLR_PANEL_BORDER, 0);
     lv_obj_set_style_border_width(obj, 1, 0);
     lv_obj_set_style_radius(obj, radius, 0);
-
-    // Subtle accent indicator bar on left edge
-    panel(obj, 0, 0, 3, height, accent, 2);
     return obj;
 }
 
@@ -120,13 +117,13 @@ void header(
     const HeaderInfo& info,
     const char* subtitle
 ) {
-    // Location name
+    // Location name (14px clean)
     label(root, info.location ? info.location : "",
           layout::MARGIN, layout::HEADER_Y,
           108, layout::HEADER_H,
           &lv_font_montserrat_14, CLR_TEXT);
 
-    // Clock
+    // Clock (14px)
     label(root, info.clockText ? info.clockText : "--:--",
           124, layout::HEADER_Y,
           54, layout::HEADER_H,
@@ -137,22 +134,29 @@ void header(
     circle(root, 186, 10, 10, dotColor, LV_OPA_30);
     circle(root, 188, 12, 6, dotColor, LV_OPA_COVER);
 
-    // Battery %
+    // Battery % / USB Power indicator
     char batBuf[8];
-    snprintf(batBuf, sizeof(batBuf), "%d%%", info.batteryPercent);
+    lv_color_t batColor = CLR_MUTED;
+    if (info.batteryPercent < 0) {
+        snprintf(batBuf, sizeof(batBuf), "USB");
+        batColor = CLR_GREEN;
+    } else {
+        snprintf(batBuf, sizeof(batBuf), "%d%%", info.batteryPercent);
+        batColor = (info.batteryPercent <= 20) ? CLR_RED : CLR_MUTED;
+    }
     label(root, batBuf,
-          199, layout::HEADER_Y,
+          199, layout::HEADER_Y + 1,
           32, layout::HEADER_H,
-          &lv_font_montserrat_14,
-          info.batteryPercent <= 20 ? CLR_RED : CLR_MUTED,
+          &lv_font_montserrat_12,
+          batColor,
           LV_TEXT_ALIGN_RIGHT);
 
-    // Optional Subtitle
+    // Optional Subtitle (12px tracking)
     if (subtitle && subtitle[0] != '\0') {
         label(root, subtitle,
               layout::MARGIN, layout::SUBTITLE_Y,
               layout::CONTENT_W, layout::SUBTITLE_H,
-              &lv_font_montserrat_14, CLR_CYAN);
+              &lv_font_montserrat_12, CLR_CYAN);
     }
 }
 
@@ -190,14 +194,22 @@ void metricCard(
 ) {
     lv_obj_t* card = glassCard(root, x, y, width, height, accent, layout::CARD_RADIUS);
 
-    label(card, title ? title : "", 10, 8, width - 18, 15,
-          &lv_font_montserrat_14, CLR_MUTED);
+    bool isCompact = (height < 56);
 
-    label(card, value ? value : "--", 10, 28, width - 18, 22,
-          &lv_font_montserrat_14, CLR_TEXT);
+    // Subtitle label (12px uppercase)
+    label(card, title ? title : "", 10, isCompact ? 4 : 6, width - 16, 13,
+          &lv_font_montserrat_12, CLR_MUTED);
 
-    label(card, caption ? caption : "", 10, height - 20, width - 18, 15,
-          &lv_font_montserrat_14, CLR_DIM);
+    // Value (16px bold for regular cards, 18px for large full cards)
+    const lv_font_t* valFont = (width >= 180 && !isCompact) ? &lv_font_montserrat_18 : &lv_font_montserrat_16;
+    label(card, value ? value : "--", 10, isCompact ? 18 : 22, width - 16, 18,
+          valFont, CLR_TEXT);
+
+    // Caption helper (12px dim)
+    if (caption && caption[0] != '\0') {
+        label(card, caption, 10, height - (isCompact ? 14 : 17), width - 16, 13,
+              &lv_font_montserrat_12, CLR_DIM);
+    }
 }
 
 void alertBanner(
@@ -211,7 +223,7 @@ void alertBanner(
     lv_obj_t* card = glassCard(root, 10, 52, 220, 38, color, 12);
     circle(card, 8, 14, 8, color);
     label(card, title, 22, 4, 190, 15, &lv_font_montserrat_14, CLR_TEXT);
-    label(card, detail ? detail : "", 22, 19, 190, 14, &lv_font_montserrat_14, CLR_MUTED);
+    label(card, detail ? detail : "", 22, 19, 190, 14, &lv_font_montserrat_12, CLR_MUTED);
 }
 
 
@@ -240,19 +252,21 @@ void gauge(
     lv_obj_set_style_opa(arc, LV_OPA_TRANSP, LV_PART_KNOB);
     lv_obj_set_style_pad_all(arc, 0, LV_PART_KNOB);
 
-    lv_obj_set_style_arc_width(arc, 7, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(arc, 6, LV_PART_MAIN);
     lv_obj_set_style_arc_color(arc, CLR_PANEL_ALT, LV_PART_MAIN);
 
-    lv_obj_set_style_arc_width(arc, 7, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(arc, 6, LV_PART_INDICATOR);
     lv_obj_set_style_arc_color(arc, color, LV_PART_INDICATOR);
 
+    // Center Value (18px bold — perfectly proportioned inside gauge)
     label(root, centerText ? centerText : "",
-          x + 7, y + diameter / 2 - 13, diameter - 14, 20,
-          &lv_font_montserrat_14, CLR_TEXT, LV_TEXT_ALIGN_CENTER);
+          x + 4, y + diameter / 2 - 12, diameter - 8, 20,
+          &lv_font_montserrat_18, CLR_TEXT, LV_TEXT_ALIGN_CENTER);
 
+    // Bottom Caption (12px)
     label(root, caption ? caption : "",
-          x + 4, y + diameter - 19, diameter - 8, 16,
-          &lv_font_montserrat_14, CLR_MUTED, LV_TEXT_ALIGN_CENTER);
+          x + 4, y + diameter - 18, diameter - 8, 14,
+          &lv_font_montserrat_12, CLR_MUTED, LV_TEXT_ALIGN_CENTER);
 }
 
 lv_obj_t* chart(

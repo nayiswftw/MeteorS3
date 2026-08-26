@@ -36,6 +36,7 @@ uint32_t lastWeatherUpdate();
 uint32_t lastAirUpdate();
 uint32_t lastHistoryWrite();
 uint32_t configRevision();
+uint32_t stateRevision();
 const char* customAlert();
 
 // ---- Write accessors ----------------------------------------------

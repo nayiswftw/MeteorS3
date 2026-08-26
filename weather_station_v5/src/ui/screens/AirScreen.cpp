@@ -9,7 +9,11 @@ static void render(lv_obj_t* root) {
     state::lock();
     AirData a = state::air();
     state::unlock();
-    if (!a.valid) return;
+
+    if (!a.valid) {
+        ui::metricCard(root, 10, 100, layout::CARD_W_FULL, 85, "AIR QUALITY", "Syncing...", "Fetching AQI, PM2.5 & gases", CLR_AIR_TOP);
+        return;
+    }
 
     lv_color_t aqiClr = ui::aqiColor(a.usAqi);
 

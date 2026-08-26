@@ -50,9 +50,8 @@ void setup() {
 
     Serial.println();
     Serial.println("=========================================");
-    Serial.println(" METEORS3 — WEATHER STATION V4");
+    Serial.println(" METEORS3 — WEATHER STATION V5");
     Serial.println(" Waveshare ESP32-S3-LCD-2");
-    Serial.println(" Glassmorphism UI & IMU Gesture Engine");
     Serial.println("=========================================");
 
     // 0. State Mutex Initialization
@@ -98,6 +97,7 @@ void loop() {
 
     // 2. Drive Network & Web/MQTT Services
     svc::networkService();
+    svc::apiService();
     svc::webServerService();
     svc::mqttService();
     svc::storageService();
@@ -136,26 +136,12 @@ void loop() {
         s_lastPageChange = millis();
     }
 
-    // 5. Track state snapshot for change detection & repaint
-    state::lock();
-    bool     isOnline      = state::isOnline();
-    time_t   weatherTime   = state::weather().fetchedAt;
-    time_t   airTime       = state::air().fetchedAt;
-    bool     autoPageEn    = state::config().enableAutoPage;
-    uint32_t autoPageSec   = state::config().autoPageSec;
-    uint32_t cfgRevision   = state::configRevision();
-    state::unlock();
+    // 5. Track state snapshot for instant responsive repaint
+    uint32_t stateRev = state::stateRevision();
+    static uint32_t s_lastStateRev = 0;
 
-    static bool     s_lastOnline      = false;
-    static time_t   s_lastWeatherTime = 0;
-    static time_t   s_lastAirTime     = 0;
-    static uint32_t s_lastCfgRev      = 0;
-
-    if (isOnline != s_lastOnline || weatherTime != s_lastWeatherTime || airTime != s_lastAirTime || cfgRevision != s_lastCfgRev) {
-        s_lastOnline      = isOnline;
-        s_lastWeatherTime = weatherTime;
-        s_lastAirTime     = airTime;
-        s_lastCfgRev      = cfgRevision;
+    if (stateRev != s_lastStateRev) {
+        s_lastStateRev = stateRev;
         screen::refresh();
     }
 
@@ -167,6 +153,11 @@ void loop() {
     }
 
     // 7. Auto page rotation (if enabled and display awake)
+    state::lock();
+    bool     autoPageEn  = state::config().enableAutoPage;
+    uint32_t autoPageSec = state::config().autoPageSec;
+    state::unlock();
+
     if (autoPageEn && hal::backlightIsAwake() && (millis() - s_lastPageChange >= (autoPageSec * 1000UL))) {
         screen::next();
         s_lastPageChange = millis();

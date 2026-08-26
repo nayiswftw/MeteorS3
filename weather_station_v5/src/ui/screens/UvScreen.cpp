@@ -8,7 +8,11 @@ static void render(lv_obj_t* root) {
     state::lock();
     WeatherData w = state::weather();
     state::unlock();
-    if (!w.valid) return;
+
+    if (!w.valid) {
+        ui::metricCard(root, 10, 100, layout::CARD_W_FULL, 85, "UV INDEX", "Syncing...", "Fetching solar radiation & UV index", CLR_UV_TOP);
+        return;
+    }
 
     // UV Gauge
     int gaugeVal = (int)constrain(w.uv * 10.0f, 0.0f, 110.0f);
@@ -38,8 +42,8 @@ static void render(lv_obj_t* root) {
         }
     }
 
-    ui::label(root, "Next 12 hours", 10, 187, 120, 16, &lv_font_montserrat_14, CLR_MUTED);
-    ui::chart(root, 10, 208, 220, 64, uvValues, count, CLR_YELLOW);
+    ui::label(root, "Next 12 hours", 10, 187, 120, 15, &lv_font_montserrat_12, CLR_MUTED);
+    ui::chart(root, 10, 206, 220, 66, uvValues, count, CLR_YELLOW);
 
     // Peak label
     char peakBuf[48];
@@ -48,7 +52,7 @@ static void render(lv_obj_t* root) {
     } else {
         snprintf(peakBuf, sizeof(peakBuf), "No UV forecast");
     }
-    ui::label(root, peakBuf, 10, 278, 220, 17, &lv_font_montserrat_14, CLR_MUTED, LV_TEXT_ALIGN_CENTER);
+    ui::label(root, peakBuf, 10, 278, 220, 16, &lv_font_montserrat_12, CLR_MUTED, LV_TEXT_ALIGN_CENTER);
 }
 
 static const bool s_reg = screen::registerScreen(

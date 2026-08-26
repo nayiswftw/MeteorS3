@@ -26,6 +26,11 @@ float readBatteryVoltage() {
 int readBatteryPercent() {
     float v = readBatteryVoltage();
 
+    // If no battery is connected / running on USB power (ADC reads floating or near zero)
+    if (v < 2.80f || v > 4.40f) {
+        return -1; // -1 denotes USB / Direct Power
+    }
+
     if (v >= 4.20f) return 100;
     if (v >= 4.00f) return map((int)(v * 1000), 4000, 4200, 80, 100);
     if (v >= 3.80f) return map((int)(v * 1000), 3800, 4000, 45, 80);

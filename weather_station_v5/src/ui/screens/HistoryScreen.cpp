@@ -25,16 +25,18 @@ static void render(lv_obj_t* root) {
     state::unlock();
 
     if (count < 2) {
-        ui::label(root, sdReady ? "Collecting history..." : "SD unavailable",
-                  10, 130, 220, 20, &lv_font_montserrat_14, CLR_MUTED, LV_TEXT_ALIGN_CENTER);
+        ui::metricCard(root, 10, 100, layout::CARD_W_FULL, 85, "LOCAL LOGS",
+                       sdReady ? "Logging Active" : "SD Inactive",
+                       sdReady ? "Collecting telemetry points" : "Insert FAT32 SD to record",
+                       CLR_HISTORY_TOP);
         return;
     }
 
-    ui::label(root, "Temperature", 10, 57, 100, 16, &lv_font_montserrat_14, CLR_MUTED);
-    ui::chart(root, 10, 76, 220, 83, temps, count, CLR_CYAN);
+    ui::label(root, "Temperature", 10, 57, 100, 15, &lv_font_montserrat_12, CLR_MUTED);
+    ui::chart(root, 10, 75, 220, 84, temps, count, CLR_CYAN);
 
-    ui::label(root, "Pressure", 10, 172, 100, 16, &lv_font_montserrat_14, CLR_MUTED);
-    ui::chart(root, 10, 191, 220, 91, press, count, CLR_PURPLE);
+    ui::label(root, "Pressure", 10, 171, 100, 15, &lv_font_montserrat_12, CLR_MUTED);
+    ui::chart(root, 10, 189, 220, 93, press, count, CLR_PURPLE);
 }
 
 static const bool s_reg = screen::registerScreen(

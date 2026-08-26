@@ -23,6 +23,7 @@ static uint32_t s_lastWeatherMs    = 0;
 static uint32_t s_lastAirMs        = 0;
 static uint32_t s_lastHistoryMs    = 0;
 static uint32_t s_configRevision   = 0;
+static uint32_t s_stateRevision    = 1;
 
 static SemaphoreHandle_t s_mutex   = nullptr;
 
@@ -49,33 +50,26 @@ void init() {
 }
 
 void lock() {
-    if (s_mutex) {
-        xSemaphoreTake(s_mutex, portMAX_DELAY);
-    }
+    if (s_mutex) xSemaphoreTake(s_mutex, portMAX_DELAY);
 }
 
 void unlock() {
-    if (s_mutex) {
-        xSemaphoreGive(s_mutex);
-    }
+    if (s_mutex) xSemaphoreGive(s_mutex);
 }
 
 // ================================================================
-//  Read accessors
+//  Read-only accessors
 // ================================================================
 
-const WeatherData&     weather()      { return s_weather; }
-const AirData&         air()          { return s_air; }
-const InsightData&     insights()     { return s_insights; }
-const AlertItem*       alerts()       { return s_alerts; }
-int                    alertCount()   { return s_alertCount; }
-const RuntimeConfig&   config()       { return s_config; }
-const SystemTelemetry& telemetry()    { return s_telemetry; }
-const char*            customAlert()  { return s_customAlert; }
-
-const RingBuffer<HistoryPoint, MAX_HISTORY>& history() {
-    return s_history;
-}
+const WeatherData&                     weather()      { return s_weather; }
+const AirData&                         air()          { return s_air; }
+const InsightData&                     insights()     { return s_insights; }
+const AlertItem*                       alerts()       { return s_alerts; }
+int                                    alertCount()   { return s_alertCount; }
+const RingBuffer<HistoryPoint, MAX_HISTORY>& history(){ return s_history; }
+const RuntimeConfig&                   config()       { return s_config; }
+const SystemTelemetry&                 telemetry()    { return s_telemetry; }
+const char*                            customAlert()  { return s_customAlert; }
 
 bool     isOnline()            { return s_online; }
 bool     isSdReady()           { return s_sdReady; }
@@ -84,6 +78,7 @@ uint32_t lastWeatherUpdate()   { return s_lastWeatherMs; }
 uint32_t lastAirUpdate()       { return s_lastAirMs; }
 uint32_t lastHistoryWrite()    { return s_lastHistoryMs; }
 uint32_t configRevision()      { return s_configRevision; }
+uint32_t stateRevision()       { return s_stateRevision; }
 
 // ================================================================
 //  Write accessors
@@ -93,6 +88,7 @@ void setWeather(const WeatherData& data) {
     lock();
     s_weather = data;
     rebuildDerived();
+    s_stateRevision++;
     unlock();
 }
 
@@ -100,12 +96,13 @@ void setAir(const AirData& data) {
     lock();
     s_air = data;
     rebuildDerived();
+    s_stateRevision++;
     unlock();
 }
 
-void setOnline(bool connected)        { lock(); s_online = connected; unlock(); }
-void setSdReady(bool ready)           { lock(); s_sdReady = ready; unlock(); }
-void setApMode(bool apMode)           { lock(); s_apMode = apMode; unlock(); }
+void setOnline(bool connected)        { lock(); s_online = connected; s_stateRevision++; unlock(); }
+void setSdReady(bool ready)           { lock(); s_sdReady = ready; s_stateRevision++; unlock(); }
+void setApMode(bool apMode)           { lock(); s_apMode = apMode; s_stateRevision++; unlock(); }
 void setLastWeatherUpdate(uint32_t ms){ lock(); s_lastWeatherMs = ms; unlock(); }
 void setLastAirUpdate(uint32_t ms)    { lock(); s_lastAirMs = ms; unlock(); }
 void setLastHistoryWrite(uint32_t ms) { lock(); s_lastHistoryMs = ms; unlock(); }
@@ -114,6 +111,7 @@ void setConfig(const RuntimeConfig& cfg) {
     lock();
     s_config = cfg;
     s_configRevision++;
+    s_stateRevision++;
     unlock();
 }
 
@@ -130,12 +128,14 @@ void setCustomAlert(const char* alertText) {
     } else {
         s_customAlert[0] = '\0';
     }
+    s_stateRevision++;
     unlock();
 }
 
 void clearCustomAlert() {
     lock();
     s_customAlert[0] = '\0';
+    s_stateRevision++;
     unlock();
 }
 

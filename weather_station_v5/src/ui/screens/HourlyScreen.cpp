@@ -9,7 +9,11 @@ static void render(lv_obj_t* root) {
     state::lock();
     WeatherData w = state::weather();
     state::unlock();
-    if (!w.valid || w.hourlyCount == 0) return;
+
+    if (!w.valid || w.hourlyCount == 0) {
+        ui::metricCard(root, 10, 100, layout::CARD_W_FULL, 85, "HOURLY FORECAST", "Syncing...", "Fetching 48-hour outlook", CLR_CYAN);
+        return;
+    }
 
     constexpr int CHART_POINTS = 16;
     float temps[CHART_POINTS];
@@ -19,21 +23,21 @@ static void render(lv_obj_t* root) {
         temps[i] = w.hourly[i].temperature;
     }
 
-    ui::label(root, "Temperature", 10, 56, 100, 16, &lv_font_montserrat_14, CLR_MUTED);
-    ui::chart(root, 10, 78, 220, 85, temps, count, CLR_CYAN);
+    ui::label(root, "Temperature", 10, 56, 100, 16, &lv_font_montserrat_12, CLR_MUTED);
+    ui::chart(root, 10, 76, 220, 85, temps, count, CLR_CYAN);
 
-    // Time ticks below chart
+    // Time ticks below chart (12px)
     for (int i = 0; i < 4; i++) {
         int idx = i * 4;
         if (idx >= count) break;
 
         const char* tStr = (i == 0) ? "NOW" : w.hourly[idx].time;
-        ui::label(root, tStr, 9 + i * 58, 168, 52, 16,
-                  &lv_font_montserrat_14, (i == 0) ? CLR_CYAN : CLR_MUTED, LV_TEXT_ALIGN_CENTER);
+        ui::label(root, tStr, 9 + i * 58, 166, 52, 15,
+                  &lv_font_montserrat_12, (i == 0) ? CLR_CYAN : CLR_MUTED, LV_TEXT_ALIGN_CENTER);
     }
 
     // 4-step forecast strip (every 2h)
-    lv_obj_t* strip = ui::panel(root, 10, 197, 220, 92, CLR_PANEL, 18);
+    lv_obj_t* strip = ui::panel(root, 10, 192, 220, 94, CLR_PANEL, 16);
 
     for (int i = 0; i < 4; i++) {
         int idx = i * 2;
@@ -42,21 +46,21 @@ static void render(lv_obj_t* root) {
         const HourData& h = w.hourly[idx];
         int x = i * 55;
 
-        // Temp
+        // Temp (16px bold)
         char tBuf[16];
         fmt::temperature(tBuf, sizeof(tBuf), h.temperature);
-        ui::label(strip, tBuf, x, 9, 55, 17, &lv_font_montserrat_14, CLR_TEXT, LV_TEXT_ALIGN_CENTER);
+        ui::label(strip, tBuf, x, 8, 55, 18, &lv_font_montserrat_16, CLR_TEXT, LV_TEXT_ALIGN_CENTER);
 
-        // Rain chance
+        // Rain chance (12px)
         char rBuf[16];
         snprintf(rBuf, sizeof(rBuf), "%d%%", h.rainChance);
-        ui::label(strip, rBuf, x, 34, 55, 17, &lv_font_montserrat_14,
+        ui::label(strip, rBuf, x, 33, 55, 15, &lv_font_montserrat_12,
                   (h.rainChance >= 50) ? CLR_BLUE : CLR_DIM, LV_TEXT_ALIGN_CENTER);
 
-        // Wind
+        // Wind (12px)
         char wBuf[16];
         fmt::wind(wBuf, sizeof(wBuf), h.wind);
-        ui::label(strip, wBuf, x, 59, 55, 17, &lv_font_montserrat_14, CLR_MUTED, LV_TEXT_ALIGN_CENTER);
+        ui::label(strip, wBuf, x, 56, 55, 15, &lv_font_montserrat_12, CLR_MUTED, LV_TEXT_ALIGN_CENTER);
     }
 }
 

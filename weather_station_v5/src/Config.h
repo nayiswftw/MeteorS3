@@ -53,9 +53,9 @@ constexpr int BUTTON_PIN  = 0;   // BOOT button
 constexpr int BATTERY_ADC = 4;   // voltage-divider tap
 constexpr int SD_CS       = 21;  // SD card chip-select
 
-// IMU (QMI8658 via I2C) — Waveshare ESP32-S3-LCD-2 / Touch-LCD-2 default pins
-constexpr int     IMU_SDA  = 15;
-constexpr int     IMU_SCL  = 7;
+// IMU (QMI8658 via I2C) — Waveshare ESP32-S3-LCD-2 / Touch-LCD-2 official pins
+constexpr int     IMU_SDA  = 48;
+constexpr int     IMU_SCL  = 47;
 constexpr uint8_t IMU_ADDR = 0x6B;
 
 // ================================================================

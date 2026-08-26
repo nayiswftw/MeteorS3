@@ -50,18 +50,20 @@ static bool checkChip(uint8_t addr) {
     if (!Wire.available()) return false;
 
     uint8_t chipId = Wire.read();
-    return (chipId == 0x05);
+    Serial.printf("[imu-probe] Device at 0x%02X responded with WHO_AM_I: 0x%02X\n", addr, chipId);
+    return (chipId == 0x05); // Official QMI8658 WHO_AM_I is 0x05
 }
 
 bool imuInit() {
     struct PinPair { int sda; int scl; };
     const PinPair candidatePins[] = {
-        { config::IMU_SDA, config::IMU_SCL }, // 15, 7 (Waveshare ESP32-S3-LCD-2 / Touch-LCD-2)
+        { 48, 47 },                            // Waveshare ESP32-S3-Touch-LCD-2 / LCD-2 (SDA=48, SCL=47)
+        { config::IMU_SDA, config::IMU_SCL },
         { 15, 7 },
         { 6, 7 },
         { 11, 12 },
-        { 4, 5 },
-        { 1, 3 }
+        { 1, 2 },
+        { 38, 39 }
     };
 
     s_imuFound = false;
@@ -69,27 +71,23 @@ bool imuInit() {
     for (const auto& pins : candidatePins) {
         Wire.end();
         Wire.begin(pins.sda, pins.scl, 400000);
+        delay(5);
 
-        if (checkChip(config::IMU_ADDR)) {
-            s_imuAddr = config::IMU_ADDR;
+        if (checkChip(0x6B)) {
+            s_imuAddr = 0x6B;
             s_imuFound = true;
-            Serial.printf("[imu] QMI8658 found on SDA=%d, SCL=%d (Addr=0x%02X)\n", pins.sda, pins.scl, s_imuAddr);
+            Serial.printf("[imu] QMI8658 found on SDA=%d, SCL=%d (Addr=0x6B)\n", pins.sda, pins.scl);
             break;
         } else if (checkChip(0x6A)) {
             s_imuAddr = 0x6A;
             s_imuFound = true;
             Serial.printf("[imu] QMI8658 found on SDA=%d, SCL=%d (Addr=0x6A)\n", pins.sda, pins.scl);
             break;
-        } else if (checkChip(0x6B)) {
-            s_imuAddr = 0x6B;
-            s_imuFound = true;
-            Serial.printf("[imu] QMI8658 found on SDA=%d, SCL=%d (Addr=0x6B)\n", pins.sda, pins.scl);
-            break;
         }
     }
 
     if (!s_imuFound) {
-        Serial.println("[imu] QMI8658 not detected on I2C (probed candidate pins)");
+        Serial.println("[imu] QMI8658 not detected (insert or check I2C pins)");
         return false;
     }
 
@@ -162,9 +160,8 @@ void imuService() {
     s_prevAy = d.accelY;
     s_prevAz = d.accelZ;
 
-    if (deltaMotion > 0.22f || fabsf(d.gyroX) > 35.0f || fabsf(d.gyroY) > 35.0f) {
+    if (deltaMotion > 0.20f || fabsf(d.gyroX) > 30.0f || fabsf(d.gyroY) > 30.0f) {
         s_motionDetected = true;
-        // Subtle motion wakes up the display smoothly
         backlightResetInactivity();
     } else {
         s_motionDetected = false;
@@ -174,44 +171,58 @@ void imuService() {
 
     // Dynamic thresholds based on sensitivity setting (1 - 10)
     uint8_t sens = constrain(state::config().gestureSensitivity, 1, 10);
-    float tiltThreshold   = 0.52f - (sens * 0.028f); // 0.24g to 0.49g
-    float returnThreshold = 0.16f;                    // Return-to-center threshold
-    float shakeGyroThresh = 280.0f - (sens * 14.0f);  // 140 to 266 dps
-
-    // 1. Shake Detection (high angular velocity in any axis)
+    float tiltThreshold   = 0.44f - (sens * 0.020f); // 0.24g to 0.42g (~15 to 25 degrees)
+    float returnThreshold = 0.14f;                   // Return-to-center threshold
+    // 1. Shake Detection (requires sustained vigorous motion and high angular velocity)
+    static uint8_t s_shakeSamples = 0;
     float gyroMag = sqrtf(d.gyroX * d.gyroX + d.gyroY * d.gyroY + d.gyroZ * d.gyroZ);
-    if (gyroMag > shakeGyroThresh && (now - s_lastGestureTimeMs > 600)) {
-        s_lastGesture = GestureType::SHAKE;
-        s_lastGestureTimeMs = now;
-        s_tiltState = TiltState::NEUTRAL;
-        backlightResetInactivity();
-        return;
+    float shakeGyroThresh = 460.0f - (sens * 15.0f); // 310 to 445 dps
+
+    if (gyroMag > shakeGyroThresh && deltaMotion > 0.75f) {
+        s_shakeSamples++;
+        if (s_shakeSamples >= 3 && (now - s_lastGestureTimeMs > 1000)) {
+            s_lastGesture = GestureType::SHAKE;
+            s_lastGestureTimeMs = now;
+            s_tiltState = TiltState::NEUTRAL;
+            s_shakeSamples = 0;
+            Serial.printf("[gesture] *** VIGOROUS SHAKE (Gyro=%.1f dps) -> Home Screen\n", gyroMag);
+            backlightResetInactivity();
+            return;
+        }
+    } else {
+        if (s_shakeSamples > 0) s_shakeSamples--;
     }
 
-    // 2. Hysteresis Tilt State Machine (requires returning towards center before next tilt)
+    // 2. Hysteresis Tilt State Machine
+    // On Waveshare ESP32-S3-LCD-2, the IMU chip is rotated 90 degrees relative to the portrait LCD:
+    // Physical Left/Right tilt corresponds to the sensor's Y-axis.
+    float lateralTilt = -s_filtAy;
+
     switch (s_tiltState) {
         case TiltState::NEUTRAL:
-            if (s_filtAx > tiltThreshold) {
+            if (lateralTilt > tiltThreshold) {
                 s_tiltState = TiltState::TILTED_RIGHT;
                 s_lastGesture = GestureType::TILT_RIGHT;
                 s_lastGestureTimeMs = now;
+                Serial.printf("[gesture] >>> TILT RIGHT (Ay=%.2f) -> Next Screen\n", lateralTilt);
                 backlightResetInactivity();
-            } else if (s_filtAx < -tiltThreshold) {
+            } else if (lateralTilt < -tiltThreshold) {
                 s_tiltState = TiltState::TILTED_LEFT;
                 s_lastGesture = GestureType::TILT_LEFT;
                 s_lastGestureTimeMs = now;
+                Serial.printf("[gesture] <<< TILT LEFT (Ay=%.2f) -> Prev Screen\n", lateralTilt);
                 backlightResetInactivity();
             }
             break;
 
         case TiltState::TILTED_RIGHT:
-            if (s_filtAx < returnThreshold) {
+            if (lateralTilt < returnThreshold) {
                 s_tiltState = TiltState::NEUTRAL;
             }
             break;
 
         case TiltState::TILTED_LEFT:
-            if (s_filtAx > -returnThreshold) {
+            if (lateralTilt > -returnThreshold) {
                 s_tiltState = TiltState::NEUTRAL;
             }
             break;
