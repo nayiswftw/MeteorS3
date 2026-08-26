@@ -31,14 +31,15 @@ void displayInit() {
     // Backlight initialization with hardware PWM
     backlightInit();
 
-
-    // Initialize SPI bus & GFX driver
+    // Initialize high-speed hardware SPI databus on ESP32-S3 FSPI peripheral
     s_lcdBus = new Arduino_ESP32SPI(
         config::LCD_DC,
         config::LCD_CS,
         config::LCD_SCLK,
         config::LCD_MOSI,
-        config::LCD_MISO
+        config::LCD_MISO,
+        FSPI,
+        true
     );
 
     s_gfx = new Arduino_ST7789(
@@ -50,8 +51,12 @@ void displayInit() {
         config::LCD_HEIGHT
     );
 
-    if (!s_gfx->begin()) {
-        Serial.println("[display] GFX begin failed");
+    // Initialize ST7789 at 80 MHz SPI bus speed with hardware DMA
+    if (!s_gfx->begin(80000000UL)) {
+        Serial.println("[display] GFX begin at 80MHz failed, retrying default clock...");
+        if (!s_gfx->begin()) {
+            Serial.println("[display] GFX begin failed");
+        }
     }
 
     s_gfx->fillScreen(RGB565_BLACK);

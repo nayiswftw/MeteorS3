@@ -1,7 +1,7 @@
 /*
- * LVGL Configuration — Weather Station V4
+ * LVGL Configuration — Weather Station V5
  *
- * Targets: LVGL 9.x, ESP32-S3, ST7789T3 (240x320, 16-bit RGB565)
+ * Targets: LVGL 9.x, ESP32-S3 Hardware Acceleration, ST7789 (240x320, 16-bit RGB565)
  *
  * Only settings that differ from LVGL 9 defaults are listed here.
  * Everything else falls through to lv_conf_internal.h defaults.
@@ -22,9 +22,25 @@
  *   MEMORY SETTINGS
  * ==================== */
 
-/* Internal LVGL memory pool (heap_caps is used separately for
+/* Internal LVGL memory pool (heap_caps DMA buffers are used separately for
    display buffers, so this only covers widgets and styles). */
-#define LV_MEM_SIZE (48U * 1024U)
+#define LV_MEM_SIZE (64U * 1024U)
+
+/* ====================
+ *   HARDWARE ACCELERATION & OS
+ * ==================== */
+
+/* FreeRTOS integration for thread safety and low latency */
+#define LV_USE_OS LV_OS_FREERTOS
+
+/* Software/Assembly draw acceleration */
+#define LV_USE_DRAW_SW 1
+#define LV_USE_DRAW_SW_ASM LV_DRAW_SW_ASM_CUSTOM
+#define LV_DRAW_SW_COMPLEX 1
+
+/* Draw cache optimization for fast rounded cards, circles, and anti-aliasing */
+#define LV_DRAW_SW_SHADOW_CACHE_SIZE 16
+#define LV_DRAW_SW_CIRCLE_CACHE_SIZE 16
 
 /* ====================
  *   DISPLAY SETTINGS

@@ -79,11 +79,11 @@ constexpr uint32_t WIFI_RETRY_MIN_MS = 5UL  * 1000;         //  5 sec
 constexpr uint32_t WIFI_RETRY_MAX_MS = 60UL * 1000;         // 60 sec
 
 // ================================================================
-//  DISPLAY — LVGL buffer tuning
+//  DISPLAY — LVGL buffer tuning & DMA Acceleration
 // ================================================================
 
 // Number of horizontal lines per partial-render stripe.
-// 40 lines × 240 px × 2 bytes = 19 200 bytes per buffer (×2 double-buffered).
-constexpr int LVGL_BUFFER_LINES = 40;
+// 64 lines × 240 px × 2 bytes = 30 720 bytes per buffer (×2 double-buffered DMA).
+constexpr int LVGL_BUFFER_LINES = 64;
 
 }  // namespace config

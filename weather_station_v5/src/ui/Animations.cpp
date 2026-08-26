@@ -27,7 +27,7 @@ static lv_obj_t*       s_lightningObj  = nullptr;
 static void animTimerCb(lv_timer_t* timer) {
     s_frame++;
 
-    // 1. Rain & Thunder Particles
+    // 1. Rain & Thunder Particles (60 FPS Fluid Physics)
     if (s_animMode == WeatherAnimMode::RAINY || s_animMode == WeatherAnimMode::THUNDER) {
         for (int i = 0; i < s_particleCount; i++) {
             Particle& p = s_particles[i];
@@ -37,15 +37,15 @@ static void animTimerCb(lv_timer_t* timer) {
             p.x += p.vx;
 
             if (p.y > 320 || p.x < 0 || p.x > 240) {
-                p.y = (float)(-(rand() % 40));
+                p.y = (float)(-(rand() % 30));
                 p.x = (float)(rand() % 240);
             }
             lv_obj_set_pos(p.obj, (int)p.x, (int)p.y);
         }
 
-        // Thunder flash (every ~120 frames with random chance)
+        // Thunder flash (every ~240 frames at 60 FPS)
         if (s_animMode == WeatherAnimMode::THUNDER && s_lightningObj) {
-            if ((s_frame % 110 == 0) && (rand() % 3 == 0)) {
+            if ((s_frame % 220 == 0) && (rand() % 3 == 0)) {
                 lv_obj_set_style_bg_opa(s_lightningObj, LV_OPA_50, 0);
             } else {
                 lv_obj_set_style_bg_opa(s_lightningObj, LV_OPA_TRANSP, 0);
@@ -53,26 +53,26 @@ static void animTimerCb(lv_timer_t* timer) {
         }
     }
 
-    // 2. Snow Particles (gentle drift with sine wobble)
+    // 2. Snow Particles (60 FPS Gentle sinusoidal drift)
     else if (s_animMode == WeatherAnimMode::SNOWY) {
         for (int i = 0; i < s_particleCount; i++) {
             Particle& p = s_particles[i];
             if (!p.obj) continue;
 
             p.y += p.vy;
-            p.x += sinf((float)s_frame * 0.05f + (float)i) * 0.8f;
+            p.x += sinf((float)s_frame * 0.025f + (float)i) * 0.4f;
 
             if (p.y > 320) {
-                p.y = (float)(-(rand() % 30));
+                p.y = (float)(-(rand() % 20));
                 p.x = (float)(rand() % 240);
             }
             lv_obj_set_pos(p.obj, (int)p.x, (int)p.y);
         }
     }
 
-    // 3. Sun Pulse (breathing halo radius & opacity)
+    // 3. Sun Pulse (60 FPS Smooth halo breathing)
     else if (s_animMode == WeatherAnimMode::SUNNY && s_sunPulseObj) {
-        float pulse = (sinf((float)s_frame * 0.08f) + 1.0f) * 0.5f; // 0.0 to 1.0
+        float pulse = (sinf((float)s_frame * 0.035f) + 1.0f) * 0.5f; // 0.0 to 1.0
         int size = 52 + (int)(pulse * 14.0f);
         lv_obj_set_size(s_sunPulseObj, size, size);
         lv_obj_set_pos(s_sunPulseObj, 178 - size / 2, 79 - size / 2);
@@ -93,7 +93,7 @@ void animStop() {
 void animInit() {
     animStop();
     if (!s_animTimer) {
-        s_animTimer = lv_timer_create(animTimerCb, 40, nullptr); // ~25 FPS
+        s_animTimer = lv_timer_create(animTimerCb, 16, nullptr); // 60 FPS Hardware-accelerated timer
     }
 }
 
@@ -140,15 +140,15 @@ void animAttachWeather(lv_obj_t* root, int weatherCode, bool isDay) {
 
     // 3. Setup Rain Particles
     if (s_animMode == WeatherAnimMode::RAINY || s_animMode == WeatherAnimMode::THUNDER) {
-        s_particleCount = 14;
+        s_particleCount = 16;
         for (int i = 0; i < s_particleCount; i++) {
             Particle& p = s_particles[i];
             p.x = (float)(rand() % 240);
             p.y = (float)(rand() % 320);
-            p.vx = -1.2f;
-            p.vy = 6.0f + (float)(rand() % 4);
+            p.vx = -0.5f;
+            p.vy = 2.6f + (float)(rand() % 3);
 
-            p.obj = panel(root, (int)p.x, (int)p.y, 2, 7 + (rand() % 5), CLR_CYAN, 1);
+            p.obj = panel(root, (int)p.x, (int)p.y, 2, 8 + (rand() % 5), CLR_CYAN, 1);
             lv_obj_set_style_bg_opa(p.obj, (lv_opa_t)(LV_OPA_40 + (rand() % 40)), 0);
             lv_obj_clear_flag(p.obj, LV_OBJ_FLAG_CLICKABLE);
         }
@@ -156,13 +156,13 @@ void animAttachWeather(lv_obj_t* root, int weatherCode, bool isDay) {
 
     // 4. Setup Snow Particles
     else if (s_animMode == WeatherAnimMode::SNOWY) {
-        s_particleCount = 12;
+        s_particleCount = 14;
         for (int i = 0; i < s_particleCount; i++) {
             Particle& p = s_particles[i];
             p.x = (float)(rand() % 240);
             p.y = (float)(rand() % 320);
             p.vx = 0.0f;
-            p.vy = 1.2f + (float)(rand() % 2);
+            p.vy = 0.7f + (float)(rand() % 2) * 0.4f;
 
             int sz = 3 + (rand() % 3);
             p.obj = panel(root, (int)p.x, (int)p.y, sz, sz, CLR_WHITE, LV_RADIUS_CIRCLE);
