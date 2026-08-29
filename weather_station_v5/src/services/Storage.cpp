@@ -236,22 +236,47 @@ void storageInit() {
         return;
     }
 
-    struct SdMmcPinPair { int clk; int cmd; int d0; };
+    struct SdMmcPinPair { int clk; int cmd; int d0; const char* desc; };
     const SdMmcPinPair pinPairs[] = {
-        { 14, 15, 2 },   // Standard Waveshare ESP32-S3-Touch-LCD-2 1-bit mode
-        { 14, 15, 16 },  // Alternate 1-bit mode
-        { 14, 15, 21 },
-        { 14, 15, 4 }
+        { 14, 15, 2,  "Waveshare Official LCD-2 (CLK=14, CMD=15, D0=2)" },
+        { 14, 15, 4,  "Alternate Pinout 1 (CLK=14, CMD=15, D0=4)" },
+        { 14, 15, 21, "Alternate Pinout 2 (CLK=14, CMD=15, D0=21)" },
+        { 14, 15, 16, "Alternate Pinout 3 (CLK=14, CMD=15, D0=16)" },
+        { 12, 11, 13, "Alternate Pinout 4 (CLK=12, CMD=11, D0=13)" }
     };
 
     bool sdOk = false;
     for (const auto& p : pinPairs) {
         SD_MMC.end();
+        delay(10);
+
+        // Enable internal pull-ups on CMD and D0 lines for reliable high-speed SPI/MMC handshaking
+        pinMode(p.cmd, INPUT_PULLUP);
+        pinMode(p.d0,  INPUT_PULLUP);
+
         if (SD_MMC.setPins(p.clk, p.cmd, p.d0)) {
-            if (SD_MMC.begin("/sdcard", true)) { // true = 1-bit mode
+            // Try standard frequency (20MHz) first, then fallback to probing speed (400kHz)
+            if (SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_DEFAULT, 5)) {
                 sdOk = true;
-                Serial.printf("[sd] SD_MMC mounted on CLK=%d CMD=%d D0=%d (Card Size: %llu MB)\n",
-                              p.clk, p.cmd, p.d0, SD_MMC.cardSize() / (1024 * 1024));
+            } else if (SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_PROBING, 5)) {
+                sdOk = true;
+            }
+
+            if (sdOk) {
+                uint8_t cardType = SD_MMC.cardType();
+                const char* typeStr = "Unknown";
+                if (cardType == CARD_MMC)  typeStr = "MMC";
+                else if (cardType == CARD_SD)   typeStr = "SDSC";
+                else if (cardType == CARD_SDHC) typeStr = "SDHC/SDXC";
+
+                uint64_t totalBytes = SD_MMC.totalBytes();
+                uint64_t cardSize   = SD_MMC.cardSize();
+
+                Serial.printf("[sd] SD_MMC mounted successfully via %s!\n", p.desc);
+                Serial.printf("[sd] Card Type: %s | Size: %llu MB | Formatted: %llu MB\n",
+                              typeStr,
+                              cardSize / (1024ULL * 1024ULL),
+                              totalBytes / (1024ULL * 1024ULL));
                 break;
             }
         }
@@ -260,7 +285,10 @@ void storageInit() {
     state::setSdReady(sdOk);
 
     if (!sdOk) {
-        Serial.println("[sd] no SD card detected via SD_MMC (insert FAT32 TF card if needed)");
+        Serial.println("[sd] MicroSD card not mounted. Please ensure:");
+        Serial.println("     1. The card is formatted as FAT32 (exFAT/NTFS will not work).");
+        Serial.println("     2. The card is 32GB or smaller for maximum compatibility.");
+        Serial.println("     3. The card is firmly pushed into the slot until it clicks.");
         return;
     }
 
@@ -269,6 +297,7 @@ void storageInit() {
         if (file) {
             file.println("time,temp,humidity,pressure,aqi");
             file.close();
+            Serial.println("[sd] created fresh /weather.csv logging database");
         }
     }
 

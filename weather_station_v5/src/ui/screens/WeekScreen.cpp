@@ -35,17 +35,17 @@ static void render(lv_obj_t* root) {
 
         // Low Temp
         char lowBuf[16];
-        fmt::tempShort(lowBuf, sizeof(lowBuf), d.low);
-        ui::label(root, lowBuf, 54, y, 42, 16, &lv_font_montserrat_14, CLR_MUTED, LV_TEXT_ALIGN_RIGHT);
+        fmt::temperature(lowBuf, sizeof(lowBuf), d.low);
+        ui::label(root, lowBuf, 48, y, 48, 16, &lv_font_montserrat_14, CLR_MUTED, LV_TEXT_ALIGN_RIGHT);
 
         // Range Bar
-        ui::rangeBar(root, 100, y + 6, 80, d.low, d.high, globalLow, globalHigh,
+        ui::rangeBar(root, 100, y + 6, 76, d.low, d.high, globalLow, globalHigh,
                      (i == 0) ? CLR_YELLOW : CLR_ORANGE);
 
         // High Temp
         char highBuf[16];
-        fmt::tempShort(highBuf, sizeof(highBuf), d.high);
-        ui::label(root, highBuf, 184, y, 46, 16, &lv_font_montserrat_14, CLR_TEXT, LV_TEXT_ALIGN_RIGHT);
+        fmt::temperature(highBuf, sizeof(highBuf), d.high);
+        ui::label(root, highBuf, 180, y, 50, 16, &lv_font_montserrat_14, CLR_TEXT, LV_TEXT_ALIGN_RIGHT);
 
         // Rain % under date if > 0
         if (d.rainChance > 0) {

@@ -32,18 +32,18 @@ static void render(lv_obj_t* root) {
     fmt::weatherName(nameBuf, sizeof(nameBuf), w.weatherCode);
     ui::label(root, nameBuf, 12, 117, 145, 22, &lv_font_montserrat_18, CLR_TEXT);
 
-    // Secondary info: Feels like, High, Low (12px clean)
+    // Secondary info: Feels like, High, Low (12px clean with full °C / °F units)
     char secBuf[64];
     char appBuf[16], highBuf[16], lowBuf[16];
-    fmt::tempShort(appBuf, sizeof(appBuf), w.apparent);
+    fmt::temperature(appBuf, sizeof(appBuf), w.apparent);
     if (w.dailyCount > 0) {
-        fmt::tempShort(highBuf, sizeof(highBuf), w.daily[0].high);
-        fmt::tempShort(lowBuf, sizeof(lowBuf), w.daily[0].low);
+        fmt::temperature(highBuf, sizeof(highBuf), w.daily[0].high);
+        fmt::temperature(lowBuf, sizeof(lowBuf), w.daily[0].low);
         snprintf(secBuf, sizeof(secBuf), "Feels %s  •  H %s  L %s", appBuf, highBuf, lowBuf);
     } else {
         snprintf(secBuf, sizeof(secBuf), "Feels %s", appBuf);
     }
-    ui::label(root, secBuf, 12, 140, 218, 16, &lv_font_montserrat_12, CLR_MUTED);
+    ui::label(root, secBuf, 10, 140, 222, 16, &lv_font_montserrat_12, CLR_MUTED);
 
     // Insight card (14px & 12px)
     lv_obj_t* insightCard = ui::panel(root, 10, 164, 220, 49, CLR_PANEL_ALT, 18);
