@@ -41,6 +41,11 @@ const char* WEBSITE_URL   = "https://reshma.nayisw.tech";
 #define COLOR_FLAME_MID   0xFE20  // Radiant Amber
 #define COLOR_FLAME_AURA  0x8A00  // Soft Fiery Glow
 #define COLOR_SMOKE       0x9CD3  // Soft Gray Smoke
+#define COLOR_LAVENDER    0xC59F  // Soft Dreamy Lavender
+#define COLOR_MINT        0x47EA  // Fresh Pastel Mint
+#define COLOR_PEACH       0xFD96  // Warm Fuzzy Peach
+#define COLOR_BABY_BLUE   0x9E7F  // Sweet Baby Blue
+#define COLOR_LEMON       0xFFF0  // Gentle Lemon Yellow
 
 /* ============================================================
  * Precision Typography & Anti-Aliased Geometric Helpers
@@ -214,6 +219,61 @@ void drawHeartCluster(int cx, int cy) {
   drawAntiAliasedSparkle(cx, cy - 4, 3, COLOR_GOLD);
 }
 
+// Kawaii Chubby Star with Specular Highlight
+void drawKawaiiStar(int cx, int cy, int size, uint16_t color) {
+  int r = size;
+  gfx->fillCircle(cx, cy, r / 2, color);
+  gfx->fillTriangle(cx, cy - r, cx - r / 3, cy, cx + r / 3, cy, color);
+  gfx->fillTriangle(cx, cy + r, cx - r / 3, cy, cx + r / 3, cy, color);
+  gfx->fillTriangle(cx - r, cy, cx, cy - r / 3, cx, cy + r / 3, color);
+  gfx->fillTriangle(cx + r, cy, cx, cy - r / 3, cx, cy + r / 3, color);
+  gfx->drawPixel(cx - 1, cy - 1, COLOR_WHITE);
+}
+
+// Tiny 5-Petal Flower with Gold Center
+void drawTinyFlower(int cx, int cy, uint16_t color) {
+  gfx->fillCircle(cx, cy - 3, 2, color);
+  gfx->fillCircle(cx + 3, cy - 1, 2, color);
+  gfx->fillCircle(cx + 2, cy + 2, 2, color);
+  gfx->fillCircle(cx - 2, cy + 2, 2, color);
+  gfx->fillCircle(cx - 3, cy - 1, 2, color);
+  gfx->fillCircle(cx, cy, 1, COLOR_GOLD);
+}
+
+// Cute Music Note
+void drawMusicNote(int cx, int cy, uint16_t color) {
+  gfx->fillCircle(cx, cy, 2, color);
+  gfx->drawFastVLine(cx + 2, cy - 7, 7, color);
+  gfx->fillTriangle(cx + 2, cy - 7, cx + 6, cy - 5, cx + 2, cy - 3, color);
+}
+
+// Adorable Butterfly with Mirrored Wings & Antennae
+void drawButterflyWings(int cx, int cy, uint16_t color1, uint16_t color2) {
+  gfx->fillRoundRect(cx - 8, cy - 5, 7, 5, 2, color1);
+  gfx->fillRoundRect(cx - 7, cy, 6, 4, 2, color2);
+  gfx->fillRoundRect(cx + 1, cy - 5, 7, 5, 2, color1);
+  gfx->fillRoundRect(cx + 1, cy, 6, 4, 2, color2);
+  gfx->drawFastVLine(cx, cy - 5, 9, COLOR_MUTED);
+  gfx->drawPixel(cx - 1, cy - 6, color1);
+  gfx->drawPixel(cx + 1, cy - 6, color1);
+  gfx->drawPixel(cx - 5, cy - 3, COLOR_WHITE);
+  gfx->drawPixel(cx + 4, cy - 3, COLOR_WHITE);
+}
+
+// Cute Wrapped Gift Box with Bow
+void drawGiftBox(int cx, int cy, uint16_t boxColor, uint16_t ribbonColor) {
+  gfx->fillRect(cx - 5, cy - 4, 10, 8, boxColor);
+  gfx->drawRect(cx - 5, cy - 4, 10, 8, COLOR_GOLD);
+  gfx->drawFastHLine(cx - 5, cy, 10, ribbonColor);
+  gfx->drawFastVLine(cx, cy - 4, 8, ribbonColor);
+  gfx->fillRect(cx - 6, cy - 6, 12, 3, boxColor);
+  gfx->drawRect(cx - 6, cy - 6, 12, 3, COLOR_GOLD);
+  gfx->drawFastVLine(cx, cy - 6, 3, ribbonColor);
+  gfx->fillTriangle(cx, cy - 7, cx - 4, cy - 9, cx - 2, cy - 7, ribbonColor);
+  gfx->fillTriangle(cx, cy - 7, cx + 4, cy - 9, cx + 2, cy - 7, ribbonColor);
+  gfx->fillCircle(cx, cy - 7, 1, COLOR_GOLD);
+}
+
 /* ============================================================
  * BOOT ANIMATION: Creative Retro-Luxury Pixel Heart Genesis
  * ============================================================ */
@@ -248,6 +308,23 @@ void drawPixelArtHeart(int cx, int cy, int pixelSize, uint16_t coreCol, uint16_t
 
 void runBootAnimation() {
   gfx->fillScreen(0x0000);
+
+  // 0. Starry Night Awakening - Twinkling Kawaii Stars
+  const uint8_t bootStarX[] = {28, 72, 168, 208, 44, 120, 190, 60, 150, 96, 200, 36};
+  const uint8_t bootStarY[] = {30, 55, 40, 70, 100, 25, 90, 140, 60, 110, 130, 160};
+  for (int pass = 0; pass < 3; pass++) {
+    for (int s = 0; s < 12; s++) {
+      if ((s + pass) % 2 == 0) {
+        drawKawaiiStar(bootStarX[s], bootStarY[s], 4, COLOR_GOLD);
+      } else {
+        gfx->fillRect(bootStarX[s] - 5, bootStarY[s] - 5, 11, 11, 0x0000);
+      }
+    }
+    delay(180);
+  }
+  for (int s = 0; s < 12; s++) {
+    gfx->fillRect(bootStarX[s] - 5, bootStarY[s] - 5, 11, 11, 0x0000);
+  }
 
   // 1. Single Diamond Singularity Awakening
   for (int p = 1; p <= 5; p++) {
@@ -324,6 +401,15 @@ void runBootAnimation() {
     delay(260);
   }
 
+  // 4.5 Blooming Flower Halo Ring around Heart
+  const int8_t flowerDX[] = {0, 30, 42, 30, 0, -30, -42, -30};
+  const int8_t flowerDY[] = {-42, -30, 0, 30, 42, 30, 0, -30};
+  for (int f = 0; f < 8; f++) {
+    uint16_t fCol = (f % 2 == 0) ? COLOR_ROSE : COLOR_LAVENDER;
+    drawTinyFlower(120 + flowerDX[f], 120 + flowerDY[f], fCol);
+    delay(70);
+  }
+
   // 5. Clean, Minimal Luxury Typography (No clutter, pure elegance)
   drawSpacedText("RESHMA", 194, 2, 6, COLOR_WHITE, 0x3186, 0x0000);
   drawSpacedText("CHAPTER 20", 222, 1, 3, COLOR_GOLD, 0x0000, 0x0000);
@@ -331,9 +417,11 @@ void runBootAnimation() {
 
   delay(900);
 
-  // Optical Flash Transition into Scene 1
-  gfx->fillScreen(COLOR_WHITE);
-  delay(60);
+  // Dreamy Golden-Rose Fade Transition into Scene 1
+  gfx->fillScreen(COLOR_GOLD);
+  delay(50);
+  gfx->fillScreen(COLOR_ROSE);
+  delay(50);
   gfx->fillScreen(COLOR_BG);
   delay(80);
 }
@@ -362,8 +450,13 @@ void renderScene1_Welcome() {
   // 4. Scalloped Pastel Heart Garland along Top & Bottom
   for (int h = 0; h < 5; h++) {
     int hx = 60 + (h * 30);
-    drawAntiAliasedHeart(hx, 16, 5, (h % 2 == 0) ? COLOR_ROSE : COLOR_PINK_DEEP);
-    drawAntiAliasedHeart(hx, 286, 5, (h % 2 == 0) ? COLOR_PINK_DEEP : COLOR_ROSE);
+    if (h % 2 == 0) {
+      drawAntiAliasedHeart(hx, 16, 5, COLOR_ROSE);
+      drawAntiAliasedHeart(hx, 286, 5, COLOR_PINK_DEEP);
+    } else {
+      drawTinyFlower(hx, 16, COLOR_LAVENDER);
+      drawTinyFlower(hx, 286, COLOR_PEACH);
+    }
   }
 
   // 5. Floating Ambient Sparkles
@@ -403,6 +496,10 @@ void renderScene1_Welcome() {
   // 10. Sweet Footer Ribbon Message
   drawCenteredText("Loved more than all the stars", 240, 1, COLOR_MUTED, COLOR_BG);
 
+  // 10.5 Adorable Butterflies beside Medallion
+  drawButterflyWings(22, 170, COLOR_LAVENDER, COLOR_ROSE);
+  drawButterflyWings(218, 170, COLOR_PEACH, COLOR_MINT);
+
   // 11. Living Animated Beating Pixel Heart inside Medallion & Fairy Sparkles
   for (int cycle = 0; cycle < 14; cycle++) {
     int pSize = (cycle % 2 == 0) ? 6 : 5;
@@ -430,6 +527,26 @@ void renderScene1_Welcome() {
       drawAntiAliasedSparkle(188, 150, 3, COLOR_GOLD);
       drawAntiAliasedSparkle(120, 262, 3, COLOR_WHITE);
     }
+
+    // Flapping butterflies (wing color swap for flap illusion)
+    gfx->fillRect(13, 163, 18, 16, COLOR_BG);
+    gfx->fillRect(209, 163, 18, 16, COLOR_BG);
+    if (cycle % 2 == 0) {
+      drawButterflyWings(22, 170, COLOR_LAVENDER, COLOR_ROSE);
+      drawButterflyWings(218, 170, COLOR_PEACH, COLOR_MINT);
+    } else {
+      drawButterflyWings(22, 170, COLOR_ROSE, COLOR_LAVENDER);
+      drawButterflyWings(218, 170, COLOR_MINT, COLOR_PEACH);
+    }
+
+    // Fairy dust sparkle trail
+    if (cycle > 0 && cycle % 3 == 0) {
+      gfx->drawPixel(14, 168, COLOR_GOLD);
+      gfx->drawPixel(16, 172, COLOR_LEMON);
+      gfx->drawPixel(226, 168, COLOR_GOLD);
+      gfx->drawPixel(224, 172, COLOR_LEMON);
+    }
+
     delay(320);
   }
 }
@@ -533,12 +650,27 @@ void renderScene2_LoveNotes() {
     gfx->setCursor(20, curY);
 
     const char* p = stanzas[s];
+    int charIdx = 0;
     while (*p) {
       gfx->print(*p++);
+      charIdx++;
+      // Blinking pen cursor every 3 characters
+      if (charIdx % 3 == 0) {
+        int penX = gfx->getCursorX();
+        gfx->drawFastVLine(penX, curY, 8, inkCol);
+        delay(30);
+        gfx->drawFastVLine(penX, curY, 8, 0xFFFA);
+      }
       delay(16);
     }
     delay(90);
   }
+
+  // 5.5 Cute Margin Doodles (like real love letter scribbles)
+  drawMusicNote(14, lineYPositions[1] - 6, COLOR_ROSE);
+  drawTinyFlower(14, lineYPositions[4] - 6, COLOR_LAVENDER);
+  drawAntiAliasedHeart(14, lineYPositions[6] - 6, 5, COLOR_PINK_DEEP);
+  drawKawaiiStar(14, lineYPositions[2] - 6, 3, COLOR_GOLD);
 
   // 6. Sign-off & 3D Royal Wax Seal Stamp
   gfx->setTextColor(0x5140, 0xFFFA);
@@ -627,6 +759,19 @@ void renderScene3_Cake() {
   gfx->drawRoundRect(70, 174, 100, 16, 4, COLOR_GOLD);
   drawCenteredTextInBox("RESHMA", 70, 100, 178, 1, COLOR_GOLD, COLOR_CARD_BG);
 
+  // 5.5 Rainbow Sprinkles on Base Tier
+  uint16_t sprinkleColors[] = {COLOR_ROSE, COLOR_GOLD, COLOR_LAVENDER, COLOR_MINT, COLOR_PEACH, COLOR_WHITE, COLOR_BABY_BLUE};
+  for (int sp = 0; sp < 12; sp++) {
+    int sx = random(44, 196);
+    int sy = random(160, 200);
+    uint16_t sc = sprinkleColors[random(7)];
+    if (sp % 2 == 0) {
+      gfx->fillRect(sx, sy, 3, 1, sc);
+    } else {
+      gfx->fillRect(sx, sy, 1, 3, sc);
+    }
+  }
+
   // 6. Tier 2: Top Tier (Width = 112, Left = 64, Right = 176, Y = 118 to 156)
   gfx->fillRoundRect(64, 118, 112, 38, 5, COLOR_CAKE_SPONGE);
   gfx->drawRoundRect(64, 118, 112, 38, 5, COLOR_GOLD);
@@ -636,6 +781,22 @@ void renderScene3_Cake() {
   drawAntiAliasedHeart(76, 116, 5, COLOR_HEART_RED);
   drawAntiAliasedHeart(120, 116, 5, COLOR_HEART_RED);
   drawAntiAliasedHeart(164, 116, 5, COLOR_HEART_RED);
+
+  // 6.5 Rainbow Sprinkles on Top Tier
+  for (int sp = 0; sp < 8; sp++) {
+    int sx = random(68, 172);
+    int sy = random(130, 152);
+    uint16_t sc = sprinkleColors[random(7)];
+    if (sp % 2 == 0) {
+      gfx->fillRect(sx, sy, 3, 1, sc);
+    } else {
+      gfx->fillRect(sx, sy, 1, 3, sc);
+    }
+  }
+
+  // 6.8 Cute Gift Boxes beside Pedestal
+  drawGiftBox(18, 210, COLOR_ROSE, COLOR_GOLD);
+  drawGiftBox(222, 210, COLOR_LAVENDER, COLOR_GOLD);
 
   // 7. Numeral 20 Birthday Candles (Candle 2 at x=92, Candle 0 at x=148)
   gfx->fillRoundRect(80, 84, 24, 34, 4, COLOR_GOLD);
@@ -743,15 +904,19 @@ void renderScene3_Cake() {
   drawCenteredTextInBox("* WISH SEALED WITH LOVE *", 22, 196, 241, 1, COLOR_GOLD, COLOR_CARD_BG);
   drawCenteredText("May this chapter bring endless joy", 264, 1, COLOR_ROSE, COLOR_BG);
 
-  // 11. Grand Celebration Fireworks & Floating Confetti
+  // 11. Grand Celebration Fireworks & Floating Confetti (Stars, Hearts, Paper & Sparkles)
   for (int c = 0; c < 120; c++) {
     int rx = (c % 2 == 0) ? random(10, 65) : random(175, 230);
     int ry = random(20, 290);
-    uint16_t colors[] = { COLOR_GOLD, COLOR_ROSE, COLOR_WHITE, COLOR_HEART_RED, COLOR_PINK_DEEP, 0x07FF, 0x7E0 };
-    uint16_t col = colors[random(7)];
+    uint16_t confettiPalette[] = { COLOR_GOLD, COLOR_ROSE, COLOR_WHITE, COLOR_HEART_RED, COLOR_PINK_DEEP, COLOR_LAVENDER, COLOR_PEACH, COLOR_MINT, COLOR_BABY_BLUE };
+    uint16_t col = confettiPalette[random(9)];
     
-    if (c % 3 == 0) {
+    if (c % 5 == 0) {
+      drawKawaiiStar(rx, ry, 4, col);
+    } else if (c % 5 == 1) {
       drawAntiAliasedHeart(rx, ry, 5, col);
+    } else if (c % 5 == 2) {
+      gfx->fillRect(rx, ry, random(2, 5), random(1, 3), col);
     } else {
       drawAntiAliasedSparkle(rx, ry, random(2, 4), col);
     }
@@ -830,7 +995,11 @@ void renderScene4_QR() {
   cfg.qrcode_ecc_level = ESP_QRCODE_ECC_LOW; // Fewer modules = Larger pixels = Instant optical scan!
   esp_qrcode_generate(&cfg, WEBSITE_URL);
 
-  // 8. Symmetrical Laser Radar Scan Bar (Y = 244)
+  // 8. Twinkling Kawaii Star Border Positions
+  const uint8_t qrStarX[] = {18, 222, 18, 222, 18, 222};
+  const uint8_t qrStarY[] = {75, 75, 140, 140, 205, 205};
+
+  // 9. Symmetrical Laser Radar Scan Bar (Y = 244) with Twinkle & Pulse
   for (int p = 0; p < 24; p++) {
     int barX = 36 + ((p * 8) % 136);
     gfx->fillRoundRect(36, 244, 168, 4, 2, COLOR_CARD_BG);
@@ -839,10 +1008,23 @@ void renderScene4_QR() {
     // Decorative baby hearts & sparkles beneath laser bar
     if (p == 0) {
       drawAntiAliasedHeart(68, 268, 6, COLOR_PINK_DEEP);
-      drawAntiAliasedHeart(120, 268, 8, COLOR_HEART_RED, COLOR_GOLD);
       drawAntiAliasedHeart(172, 268, 6, COLOR_PINK_DEEP);
       drawAntiAliasedSparkle(94, 268, 2, COLOR_GOLD);
       drawAntiAliasedSparkle(146, 268, 2, COLOR_GOLD);
+    }
+
+    // Pulsing center heart invitation
+    int heartSize = 7 + (p % 3);
+    gfx->fillRect(108, 258, 24, 22, COLOR_BG);
+    drawAntiAliasedHeart(120, 268, heartSize, COLOR_HEART_RED, COLOR_GOLD);
+
+    // Twinkling kawaii stars around QR frame
+    for (int ts = 0; ts < 6; ts++) {
+      if ((p + ts) % 2 == 0) {
+        drawKawaiiStar(qrStarX[ts], qrStarY[ts], 3, COLOR_GOLD);
+      } else {
+        gfx->fillRect(qrStarX[ts] - 4, qrStarY[ts] - 4, 9, 9, COLOR_BG);
+      }
     }
 
     delay(380);
